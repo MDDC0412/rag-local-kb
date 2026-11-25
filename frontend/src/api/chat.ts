@@ -25,6 +25,10 @@ export interface Conversation {
   id: number
   kb_id: number
   title: string
+  llm_provider_id?: number | null
+  embedding_provider_id?: number | null
+  rerank_provider_id?: number | null
+  use_rerank?: boolean
   created_at: string
   updated_at: string
 }
@@ -70,6 +74,35 @@ export interface ChatOptions {
   expand_retry: boolean
 }
 
+export interface TraceStep {
+  name: string
+  label: string
+  status: 'running' | 'done' | 'skipped' | 'failed'
+  detail: string
+  elapsed_ms: number
+}
+
+export interface ModelRef {
+  name: string
+  model: string
+}
+
+export interface ModelOption {
+  id: number
+  name: string
+  model: string
+  kind: string
+  is_default: boolean
+  protocol: string
+}
+
+export interface ModelOptions {
+  llm: ModelOption[]
+  embedding: ModelOption[]
+  rerank: ModelOption[]
+  defaults: Record<string, number | null>
+}
+
 export const defaultOptions: ChatOptions = {
   use_rerank: true,
   vector_top_n: 20,
@@ -87,6 +120,16 @@ export const chatApi = {
   detail: (id: number) => http.get<ConversationDetail>(`/conversations/${id}`),
   rename: (id: number, title: string) => http.put<Conversation>(`/conversations/${id}`, { title }),
   remove: (id: number) => http.del<void>(`/conversations/${id}`),
+  modelOptions: () => http.get<ModelOptions>('/models/options'),
+  updateModels: (
+    id: number,
+    body: {
+      llm_provider_id: number | null
+      embedding_provider_id: number | null
+      rerank_provider_id: number | null
+      use_rerank: boolean
+    },
+  ) => http.put<Conversation>(`/conversations/${id}/models`, body),
   retrieval: (messageId: number) =>
     http.get<{ message_id: number; retrieval: RetrievalDebugData }>(
       `/messages/${messageId}/retrieval`,
@@ -104,6 +147,13 @@ export const chatApi = {
 
 /** SSE 事件回调。 */
 export interface StreamHandlers {
+  onStarted?: (data: {
+    question: string
+    use_rerank: boolean
+    note: string
+    models: { llm: ModelRef; embedding: ModelRef; rerank: ModelRef | null }
+  }) => void
+  onStep?: (step: TraceStep) => void
   onRetrieval?: (data: {
     chunks: RetrievalChunk[]
     expanded: boolean
@@ -112,7 +162,12 @@ export interface StreamHandlers {
   }) => void
   onDelta?: (text: string) => void
   onCitations?: (items: Citation[]) => void
-  onDone?: (data: { message_id: number; usage: Record<string, number>; latency_ms: number }) => void
+  onDone?: (data: {
+    message_id: number
+    usage: Record<string, number>
+    latency_ms: number
+    steps?: TraceStep[]
+  }) => void
   onError?: (message: string) => void
 }
 
@@ -183,6 +238,19 @@ function handleBlock(block: string, handlers: StreamHandlers) {
   }
 
   switch (event) {
+    case 'started':
+      handlers.onStarted?.(
+        data as unknown as {
+          question: string
+          use_rerank: boolean
+          note: string
+          models: { llm: ModelRef; embedding: ModelRef; rerank: ModelRef | null }
+        },
+      )
+      break
+    case 'step':
+      handlers.onStep?.(data as unknown as TraceStep)
+      break
     case 'retrieval':
       handlers.onRetrieval?.(
         data as unknown as {

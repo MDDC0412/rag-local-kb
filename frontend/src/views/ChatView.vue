@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   chatApi,
   defaultOptions,
@@ -8,9 +8,12 @@ import {
   type Citation,
   type Conversation,
   type MessageItem,
+  type ModelOptions,
   type RetrievalDebugData,
+  type TraceStep,
 } from '@/api/chat'
 import { renderMarkdown } from '@/api/markdown'
+import TracePanel from '@/components/TracePanel.vue'
 
 const conversations = ref<Conversation[]>([])
 const activeId = ref<number | null>(null)
@@ -23,16 +26,36 @@ const streaming = ref(false)
 const streamText = ref('')
 const liveChunks = ref<Citation[]>([])
 const liveInfo = reactive({ expanded: false, rewritten: '', lowScore: false })
+
+// 轨迹
+const traceSteps = ref<TraceStep[]>([])
+const liveModels = ref<{
+  llm?: { name: string; model: string } | null
+  embedding?: { name: string; model: string } | null
+  rerank?: { name: string; model: string } | null
+} | null>(null)
+
+// 轨迹面板：可收起、可拖宽（上限为对话区一半）
+const TRACE_MIN = 200
+const TRACE_DEFAULT = 280
+const traceWidth = ref(TRACE_DEFAULT)
+const traceCollapsed = ref(false)
+const dragging = ref(false)
+
 const abortController = ref<AbortController | null>(null)
 
 const options = reactive<ChatOptions>({ ...defaultOptions })
 const showOptions = ref(false)
 
+// 模型选择
+const modelOptions = ref<ModelOptions | null>(null)
+const showModels = ref(false)
+const modelsLoading = ref(false)
+
 // 引用弹层
 const openCitation = ref<Citation | null>(null)
 // 检索详情
 const debugData = ref<RetrievalDebugData | null>(null)
-const debugFor = ref<number | null>(null)
 // 提示词优化
 const optimizing = ref(false)
 const suggestion = ref<{ optimized: string; rationale: string } | null>(null)
@@ -40,12 +63,117 @@ const suggestion = ref<{ optimized: string; rationale: string } | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 
 const isEmpty = computed(() => !messages.value.length && !streamText.value)
+const activeConversation = computed(
+  () => conversations.value.find((conv) => conv.id === activeId.value) ?? null,
+)
+
+/** 整个聊天容器的引用：拖拽与上限都以它为基准（需先声明再被引用）。 */
+const chatRootEl = ref<HTMLElement | null>(null)
+
+/** 轨迹面板宽度上限：chat 容器总宽的一半（不随拖拽变化，所以稳定）。 */
+const maxTraceWidth = computed(() => {
+  const total = chatRootEl.value?.clientWidth ?? 900
+  return Math.max(TRACE_MIN, Math.floor(total / 2))
+})
+
+// ---------------- 拖拽 ------------
+/** 拖拽起点快照：用 delta 计算宽度，避免"面板变宽→基准变化→互相追逐"。 */
+let dragStartX = 0
+let dragStartWidth = TRACE_DEFAULT
+
+function startDrag(event: MouseEvent) {
+  event.preventDefault()
+  dragging.value = true
+  dragStartX = event.clientX
+  dragStartWidth = traceWidth.value
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  window.addEventListener('mousemove', onDrag)
+  window.addEventListener('mouseup', stopDrag)
+}
+
+function onDrag(event: MouseEvent) {
+  if (!dragging.value) return
+  // 鼠标往左移动（clientX 变小）→ delta 为负 → 面板变宽
+  const delta = event.clientX - dragStartX
+  const next = dragStartWidth - delta
+  traceWidth.value = Math.min(maxTraceWidth.value, Math.max(TRACE_MIN, Math.round(next)))
+}
+
+function stopDrag() {
+  dragging.value = false
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  window.removeEventListener('mousemove', onDrag)
+  window.removeEventListener('mouseup', stopDrag)
+}
+
+onBeforeUnmount(() => {
+  stopDrag()
+  abortController.value?.abort()
+})
 
 async function loadConversations() {
   conversations.value = await chatApi.list()
   if (!activeId.value && conversations.value.length) {
     await selectConversation(conversations.value[0].id)
   }
+}
+
+async function openModels() {
+  showModels.value = true
+  if (modelOptions.value) return
+  modelsLoading.value = true
+  try {
+    modelOptions.value = await chatApi.modelOptions()
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+/** 从历史消息里还原某条回答的轨迹（retrieval_json 里存了 steps）。 */
+function traceOf(msg: MessageItem): TraceStep[] {
+  try {
+    const data = JSON.parse(msg.retrieval_json || '{}')
+    return Array.isArray(data.steps) ? (data.steps as TraceStep[]) : []
+  } catch {
+    return []
+  }
+}
+
+async function selectMessageTrace(msg: MessageItem) {
+  const steps = traceOf(msg)
+  if (steps.length) {
+    traceSteps.value = steps
+    liveInfo.expanded = Boolean(JSON.parse(msg.retrieval_json || '{}').expanded)
+    liveInfo.rewritten = msg.rewritten_query
+  }
+}
+
+/** 保存会话的模型选择。 */
+async function saveModels(payload: {
+  llm_provider_id: number | null
+  embedding_provider_id: number | null
+  rerank_provider_id: number | null
+  use_rerank: boolean
+}) {
+  if (!activeId.value) return
+  try {
+    const updated = await chatApi.updateModels(activeId.value, payload)
+    const index = conversations.value.findIndex((conv) => conv.id === updated.id)
+    if (index >= 0) conversations.value[index] = updated
+    showModels.value = false
+  } catch (e) {
+    error.value = (e as Error).message
+  }
+}
+
+function modelName(kind: 'llm' | 'embedding' | 'rerank', id: number | null | undefined): string {
+  if (!modelOptions.value || id == null) return '跟随默认'
+  const found = modelOptions.value[kind].find((item) => item.id === id)
+  return found ? found.model : '跟随默认'
 }
 
 async function selectConversation(id: number) {
@@ -95,6 +223,8 @@ async function send() {
   liveInfo.expanded = false
   liveInfo.rewritten = ''
   liveInfo.lowScore = false
+  traceSteps.value = []
+  liveModels.value = null
   error.value = ''
 
   // 先把用户消息显示出来（后端也会落库，返回后重新拉取）
@@ -117,6 +247,13 @@ async function send() {
   await streamChat(
     { conversation_id: activeId.value, question, options: { ...options } },
     {
+      onStarted(data) {
+        liveModels.value = data.models
+        if (data.note) error.value = ''
+      },
+      onStep(step) {
+        traceSteps.value = [...traceSteps.value, step]
+      },
       onRetrieval(data) {
         liveChunks.value = data.chunks.map((chunk) => ({
           n: chunk.n,
@@ -135,8 +272,9 @@ async function send() {
         streamText.value += text
         scrollToBottom()
       },
-      onDone() {
+      onDone(data) {
         streaming.value = false
+        if (data.steps?.length) traceSteps.value = data.steps
       },
       onError(message) {
         error.value = message
@@ -197,7 +335,8 @@ async function showDebug(msg: MessageItem) {
   try {
     const result = await chatApi.retrieval(msg.id)
     debugData.value = result.retrieval
-    debugFor.value = msg.id
+    // 同时把这条回答的轨迹回填到右侧面板，方便对照"当次检索"与"步骤"
+    await selectMessageTrace(msg)
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -247,7 +386,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="chat">
+  <div ref="chatRootEl" class="chat">
     <!-- 会话列表 -->
     <aside class="side">
       <button class="btn btn-sm new-btn" @click="newConversation">新会话</button>
@@ -264,6 +403,7 @@ onMounted(async () => {
         </div>
       </div>
       <div class="side-foot">
+        <button class="btn btn-sm btn-quiet" @click="openModels">模型选择</button>
         <button class="btn btn-sm btn-quiet" @click="showOptions = !showOptions">
           {{ showOptions ? '收起检索参数' : '检索参数' }}
         </button>
@@ -385,6 +525,45 @@ onMounted(async () => {
       </div>
     </section>
 
+    <!-- 右侧轨迹面板 -->
+    <div
+      v-if="!traceCollapsed"
+      class="trace-resizer"
+      :class="{ active: dragging }"
+      title="拖动调整宽度，最多到对话区的一半"
+      @mousedown="startDrag"
+    />
+    <TracePanel
+      v-if="!traceCollapsed"
+      class="trace-pane"
+      :style="{ width: traceWidth + 'px' }"
+      :steps="traceSteps"
+      :streaming="streaming"
+      :models="liveModels"
+      :expanded="liveInfo.expanded"
+      :rewritten="liveInfo.rewritten"
+      @collapse="traceCollapsed = true"
+    />
+    <button
+      v-else
+      class="trace-open"
+      title="展开执行过程面板"
+      @click="traceCollapsed = false"
+    >
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+        <path
+          d="M6 3.5 10.5 8 6 12.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <span>过程</span>
+    </button>
+
+
     <!-- 检索参数抽屉 -->
     <Teleport to="body">
       <div v-if="showOptions" class="overlay right" @click.self="showOptions = false">
@@ -440,6 +619,127 @@ onMounted(async () => {
               阈值判断用的是向量相似度：实测无关查询约 0.29、相关约 0.63，所以 0.35 是个合理下限。
             </p>
             <button class="btn btn-sm" @click="exportMarkdown">导出本会话 Markdown</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 模型选择抽屉 -->
+    <Teleport to="body">
+      <div v-if="showModels" class="overlay right" @click.self="showModels = false">
+        <div class="drawer">
+          <header class="drawer-head">
+            <h3>本会话使用的模型</h3>
+            <button class="btn btn-sm btn-quiet" @click="showModels = false">关闭</button>
+          </header>
+          <div class="drawer-body">
+            <p v-if="modelsLoading" class="hint-text">加载中…</p>
+            <p v-else-if="!modelOptions" class="hint-text">没有取到模型列表。</p>
+
+            <template v-else>
+              <p class="drawer-hint">
+                「跟随默认」表示用该类型里标记为默认的供应商。选择只影响本会话，
+                历史对话仍按它当时用的模型解释。
+              </p>
+
+              <div class="model-group">
+                <label>对话模型</label>
+                <select
+                  :value="activeConversation?.llm_provider_id ?? ''"
+                  @change="
+                    (e) =>
+                      saveModels({
+                        llm_provider_id: Number((e.target as HTMLSelectElement).value) || null,
+                        embedding_provider_id: activeConversation?.embedding_provider_id ?? null,
+                        rerank_provider_id: activeConversation?.rerank_provider_id ?? null,
+                        use_rerank: activeConversation?.use_rerank ?? true,
+                      })
+                  "
+                >
+                  <option value="">跟随默认</option>
+                  <option v-for="item in modelOptions.llm" :key="item.id" :value="item.id">
+                    {{ item.name }} · {{ item.model }}{{ item.is_default ? '（默认）' : '' }}
+                  </option>
+                </select>
+              </div>
+
+              <div class="model-group">
+                <label>向量模型</label>
+                <select
+                  :value="activeConversation?.embedding_provider_id ?? ''"
+                  @change="
+                    (e) =>
+                      saveModels({
+                        llm_provider_id: activeConversation?.llm_provider_id ?? null,
+                        embedding_provider_id: Number((e.target as HTMLSelectElement).value) || null,
+                        rerank_provider_id: activeConversation?.rerank_provider_id ?? null,
+                        use_rerank: activeConversation?.use_rerank ?? true,
+                      })
+                  "
+                >
+                  <option value="">跟随默认</option>
+                  <option v-for="item in modelOptions.embedding" :key="item.id" :value="item.id">
+                    {{ item.name }} · {{ item.model }}{{ item.is_default ? '（默认）' : '' }}
+                  </option>
+                </select>
+                <span class="hint-text">
+                  注意：换向量模型会导致已入库向量与新查询维度不一致，检索会失效。
+                </span>
+              </div>
+
+              <div class="model-group">
+                <label>重排模型</label>
+                <select
+                  :value="activeConversation?.rerank_provider_id ?? ''"
+                  @change="
+                    (e) =>
+                      saveModels({
+                        llm_provider_id: activeConversation?.llm_provider_id ?? null,
+                        embedding_provider_id: activeConversation?.embedding_provider_id ?? null,
+                        rerank_provider_id: Number((e.target as HTMLSelectElement).value) || null,
+                        use_rerank: activeConversation?.use_rerank ?? true,
+                      })
+                  "
+                >
+                  <option value="">跟随默认</option>
+                  <option v-for="item in modelOptions.rerank" :key="item.id" :value="item.id">
+                    {{ item.name }} · {{ item.model }}{{ item.is_default ? '（默认）' : '' }}
+                  </option>
+                </select>
+              </div>
+
+              <label class="row">
+                <span>启用重排</span>
+                <input
+                  type="checkbox"
+                  :checked="activeConversation?.use_rerank ?? true"
+                  @change="
+                    (e) =>
+                      saveModels({
+                        llm_provider_id: activeConversation?.llm_provider_id ?? null,
+                        embedding_provider_id: activeConversation?.embedding_provider_id ?? null,
+                        rerank_provider_id: activeConversation?.rerank_provider_id ?? null,
+                        use_rerank: (e.target as HTMLInputElement).checked,
+                      })
+                  "
+                />
+              </label>
+
+              <div class="model-summary">
+                <div class="model-summary-row">
+                  <span>对话</span>
+                  <span class="mono">{{ modelName('llm', activeConversation?.llm_provider_id) }}</span>
+                </div>
+                <div class="model-summary-row">
+                  <span>向量</span>
+                  <span class="mono">{{ modelName('embedding', activeConversation?.embedding_provider_id) }}</span>
+                </div>
+                <div class="model-summary-row">
+                  <span>重排</span>
+                  <span class="mono">{{ modelName('rerank', activeConversation?.rerank_provider_id) }}</span>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -520,15 +820,65 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* 三列：会话列表 | 对话 | 轨迹（最后一列固定在最右） */
 .chat {
-  display: grid;
-  grid-template-columns: 190px 1fr;
-  gap: var(--sp-4);
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-3);
   height: calc(100vh - var(--topbar-h) - var(--sp-6) * 2);
+  min-height: 0;
+}
+
+/* 轨迹面板 */
+.trace-pane {
+  flex: none;
+  min-width: 0;
+  transition: width 0.12s var(--ease);
+}
+.trace-resizer {
+  position: relative;
+  z-index: 5;
+  flex: none;
+  width: 7px;
+  cursor: col-resize;
+  border-radius: 3px;
+  background: var(--line);
+  transition: background 0.12s var(--ease);
+  align-self: stretch;
+}
+.trace-resizer:hover,
+.trace-resizer.active {
+  background: var(--accent-border);
+}
+.trace-open {
+  /* flex:none 必加：chat 是 flex 容器，按钮默认可被压缩，会把"过程"挤成两行 */
+  flex: none;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.trace-open:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+  border-color: var(--text-2);
 }
 
 /* 会话列表 */
 .side {
+  flex: none;
+  width: 190px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -585,8 +935,9 @@ onMounted(async () => {
   padding-top: var(--sp-2);
 }
 
-/* 主区 */
+/* 主对话区 */
 .main {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -808,6 +1159,42 @@ onMounted(async () => {
   gap: var(--sp-3);
   overflow-y: auto;
 }
+.model-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.model-group > label {
+  font-size: 12px;
+  color: var(--text-1);
+}
+.model-group select {
+  height: 32px;
+  font-size: 12px;
+}
+.model-summary {
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.model-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.model-summary-row .mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .row {
   display: flex;
   align-items: center;
