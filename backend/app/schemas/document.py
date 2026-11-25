@@ -20,7 +20,11 @@ ChunkStrategy = Literal[
 
 
 class DocumentOut(BaseModel):
-    """文档列表项。"""
+    """文档列表项。
+
+    ``tags`` / ``category`` 由列表接口批量填充（避免 N+1），
+    单条接口不填时保持默认空值。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,6 +37,9 @@ class DocumentOut(BaseModel):
     char_count: int
     size: int
     error_msg: str
+    summary: str = ""
+    category: str | None = None
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
     indexed_at: datetime | None
 

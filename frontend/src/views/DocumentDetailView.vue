@@ -15,6 +15,7 @@ import {
   type StrategySample,
 } from '@/api/documents'
 import { JOB_LABEL, isActive, jobsApi, type Job } from '@/api/jobs'
+import { tagsApi } from '@/api/tags'
 import StrategySampleModal from '@/components/StrategySampleModal.vue'
 
 const route = useRoute()
@@ -281,6 +282,20 @@ async function retryJob() {
   }
 }
 
+/** 手动重打标签，轮询到结束再刷新。 */
+async function retag() {
+  busy.value = 'tag'
+  error.value = ''
+  notice.value = ''
+  try {
+    const result = await tagsApi.tag(docId)
+    watchJob(result.job)
+  } catch (e) {
+    error.value = (e as Error).message
+    busy.value = ''
+  }
+}
+
 async function reparse() {
   busy.value = 'parse'
   try {
@@ -365,6 +380,22 @@ onMounted(load)
       <p v-if="activeJob.status === 'failed' && activeJob.error_msg" class="jobbar-msg">
         {{ activeJob.error_msg }}
       </p>
+    </section>
+
+    <!-- 摘要 / 分类 / 标签（由打标签任务生成） -->
+    <section v-if="doc && (doc.summary || doc.tags.length || doc.category)" class="tagbox card">
+      <div class="tagbox-head">
+        <span class="tagbox-label">文档摘要</span>
+        <button class="btn btn-sm btn-quiet" :disabled="!!busy" @click="retag">
+          {{ busy === 'tag' ? '生成中…' : '重打标签' }}
+        </button>
+      </div>
+      <p v-if="doc.summary" class="tagbox-summary">{{ doc.summary }}</p>
+      <p v-else class="tagbox-summary muted">还没有摘要</p>
+      <div class="tagbox-meta">
+        <span v-if="doc.category" class="tag tag-cat">{{ doc.category }}</span>
+        <span v-for="name in doc.tags" :key="name" class="chip">{{ name }}</span>
+      </div>
     </section>
 
     <!-- 切分参数 -->
@@ -566,6 +597,50 @@ onMounted(load)
 .notice.bad {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+/* 摘要 / 分类 / 标签 */
+.tagbox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+}
+.tagbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tagbox-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.tagbox-summary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-0);
+}
+.tagbox-summary.muted {
+  color: var(--text-2);
+}
+.tagbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.chip {
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  color: var(--text-1);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.tag-cat {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 /* 后台任务进度条 */

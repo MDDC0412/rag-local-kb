@@ -7,6 +7,8 @@ import {
   formatSize,
   type DocumentItem,
 } from '@/api/documents'
+import { isActive, jobsApi, type Job } from '@/api/jobs'
+import { tagsApi } from '@/api/tags'
 import { useDocsStore } from '@/stores/docs'
 
 const store = useDocsStore()
@@ -15,6 +17,8 @@ const router = useRouter()
 const dragging = ref(false)
 const notice = ref<{ tone: 'ok' | 'warn' | 'bad'; text: string } | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
+/** 正在打标签的文档 id（按钮转圈用）。 */
+const tagging = ref<number | null>(null)
 
 const stats = computed(() => [
   { label: '文档', value: store.stats.documents },
@@ -66,6 +70,35 @@ async function removeDoc(doc: DocumentItem) {
 
 function openDetail(doc: DocumentItem) {
   router.push(`/documents/${doc.id}`)
+}
+
+/** 手动触发打标签，轮询到结束再刷新列表。 */
+async function tagDoc(doc: DocumentItem, event: Event) {
+  event.stopPropagation()
+  tagging.value = doc.id
+  notice.value = null
+  try {
+    const result = await tagsApi.tag(doc.id)
+    await pollTag(result.job)
+  } catch (e) {
+    notice.value = { tone: 'bad', text: (e as Error).message }
+  } finally {
+    tagging.value = null
+  }
+}
+
+async function pollTag(job: Job): Promise<void> {
+  let latest = job
+  for (let attempt = 0; attempt < 60 && isActive(latest); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    latest = await jobsApi.get(job.id)
+  }
+  await store.load()
+  if (latest.status === 'failed') {
+    notice.value = { tone: 'bad', text: latest.error_msg || '打标签失败，可以再试一次' }
+    return
+  }
+  notice.value = { tone: 'ok', text: '已生成摘要、分类和标签' }
 }
 
 function formatDate(value: string): string {
@@ -139,6 +172,7 @@ onMounted(() => store.load())
             <span class="tag" :class="STATUS_TONE[doc.status]">
               {{ STATUS_LABEL[doc.status] }}
             </span>
+            <span v-if="doc.category" class="tag tag-cat">{{ doc.category }}</span>
           </div>
           <div class="row-meta">
             <span>{{ doc.page_count }} 段</span>
@@ -147,10 +181,22 @@ onMounted(() => store.load())
             <span>{{ formatDate(doc.created_at) }}</span>
             <span v-if="doc.parse_mode === 'llm'" class="tag tag-accent">智能解析</span>
           </div>
+          <p v-if="doc.summary" class="row-summary">{{ doc.summary }}</p>
+          <div v-if="doc.tags.length" class="row-tags">
+            <span v-for="name in doc.tags" :key="name" class="chip">{{ name }}</span>
+          </div>
           <p v-if="doc.error_msg" class="row-error">{{ doc.error_msg }}</p>
         </div>
 
         <div class="row-actions" @click.stop>
+          <button
+            class="btn btn-sm btn-quiet"
+            :disabled="tagging === doc.id"
+            :title="doc.tags.length ? '重新生成摘要、分类和标签' : '生成摘要、分类和标签'"
+            @click="tagDoc(doc, $event)"
+          >
+            {{ tagging === doc.id ? '生成中…' : doc.tags.length ? '重打标签' : '打标签' }}
+          </button>
           <button class="btn btn-sm" @click="openDetail(doc)">查看分块</button>
           <button class="btn btn-sm btn-quiet btn-danger" @click="removeDoc(doc)">删除</button>
         </div>
@@ -274,7 +320,7 @@ onMounted(() => store.load())
 
 .row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--sp-4);
   padding: 13px var(--sp-4);
@@ -290,6 +336,7 @@ onMounted(() => store.load())
 }
 .row-main {
   min-width: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -321,10 +368,38 @@ onMounted(() => store.load())
   font-size: 12px;
   color: var(--danger);
 }
+.row-summary {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chip {
+  padding: 1px 7px;
+  border-radius: var(--r-sm);
+  background: var(--bg-3);
+  color: var(--text-1);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+.tag-cat {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .row-actions {
   display: flex;
   gap: 4px;
   flex: none;
+  padding-top: 1px;
 }
 
 @media (max-width: 760px) {

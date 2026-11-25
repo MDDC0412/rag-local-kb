@@ -13,6 +13,9 @@ export interface DocumentItem {
   char_count: number
   size: number
   error_msg: string
+  summary: string
+  category: string | null
+  tags: string[]
   created_at: string
   indexed_at: string | null
 }

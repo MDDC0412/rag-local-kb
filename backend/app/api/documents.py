@@ -27,6 +27,7 @@ from app.schemas.document import (
 from app.schemas.job import JobEnqueued
 from app.services import documents as doc_service
 from app.services import jobs as job_service
+from app.services import tagging as tagging_service
 from app.services.llm_parse import chunk_with_llm
 from app.workers.queue import get_queue
 
@@ -144,9 +145,19 @@ async def list_documents(
     status: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> list[DocumentOut]:
-    """列出文档。"""
+    """列出文档（含标签与分类，批量查询避免 N+1）。"""
     rows = await doc_service.list_documents(session, kb_id, status=status)
-    return [DocumentOut.model_validate(row) for row in rows]
+    items = [DocumentOut.model_validate(row) for row in rows]
+
+    tag_map = await tagging_service.document_tag_map(session, [row.id for row in rows])
+    category_ids = {row.category_id for row in rows if row.category_id}
+    category_names = {
+        cid: await tagging_service.document_category_name(session, cid) for cid in category_ids
+    }
+    for item, row in zip(items, rows, strict=True):
+        item.tags = tag_map.get(row.id, [])
+        item.category = category_names.get(row.category_id) if row.category_id else None
+    return items
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetail)
@@ -157,8 +168,14 @@ async def get_document_detail(
     doc = await doc_service.get_document(session, document_id)
     chunks = await doc_service.list_chunks(session, document_id)
     stats = await doc_service.document_stats(session, doc.kb_id)
+
+    payload = DocumentOut.model_validate(doc)
+    tag_map = await tagging_service.document_tag_map(session, [document_id])
+    payload.tags = tag_map.get(document_id, [])
+    payload.category = await tagging_service.document_category_name(session, doc.category_id)
+
     return DocumentDetail(
-        document=DocumentOut.model_validate(doc),
+        document=payload,
         chunks=[
             ChunkPreviewItem(
                 id=chunk.id,
