@@ -22,6 +22,7 @@ from app.core.errors import (
     AppError,
 )
 from app.core.logging import mask_secret
+from app.core.net import async_client
 
 DASHSCOPE_RERANK_PATH = "/api/v1/services/rerank/text-rerank/text-rerank"
 
@@ -123,7 +124,7 @@ async def _request(
 ) -> dict[str, Any]:
     """发请求并返回 JSON；异常统一转 AppError。"""
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with async_client(timeout) as client:
             resp = await client.request(method, url, headers=_auth_headers(spec), json=json)
             resp.raise_for_status()
             return resp.json()

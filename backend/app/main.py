@@ -14,6 +14,7 @@ from app.api import providers as providers_api
 from app.config import get_settings
 from app.core.errors import INTERNAL_ERROR, VALIDATION_FAILED, AppError
 from app.core.logging import setup_logging
+from app.core.net import install_proxy_env
 from app.db.seed import seed_defaults
 from app.db.session import init_db
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """启动：建表 + 种子数据；关闭：无需清理。"""
     logger.info("启动中… data_dir=%s", settings.data_dir)
+    install_proxy_env()
     await init_db()
     await seed_defaults()
     logger.info("就绪：http://%s:%s/docs", settings.app_host, settings.app_port)

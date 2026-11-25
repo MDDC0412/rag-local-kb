@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -26,6 +27,8 @@ class Settings(BaseSettings):
     app_data_dir: str = ""
     app_log_level: str = "INFO"
     app_cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8080"
+    # 外网代理：留空=自动读取 Windows 系统代理；填 direct=不走代理；填 http://host:port=强制指定
+    app_http_proxy: str = ""
 
     # 开发种子：首次启动时写入数据库（加密），之后以数据库为准
     dev_llm_base_url: str = ""
@@ -85,6 +88,24 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [item.strip() for item in self.app_cors_origins.split(",") if item.strip()]
+
+    @property
+    def http_proxy(self) -> str | None:
+        """外网代理地址；默认直连（返回 None）。
+
+        踩过的坑：httpx 的 ``trust_env=True``（默认）在 Windows 上会去读**注册表里的系统代理**。
+        本机注册表指向 127.0.0.1:7890，但那个代理自身 TLS 握手是坏的，于是所有请求都失败在
+        一个和代码无关的地方。所以这里一律「显式才算数」，默认直连。
+
+        需要走代理时（例如直连 OpenAI 官方被拦），在 .env 里写：
+            APP_HTTP_PROXY=http://127.0.0.1:7890
+        """
+        raw = (self.app_http_proxy or "").strip()
+        if not raw or raw.lower() == "direct":
+            return None
+        if not raw.startswith(("http://", "https://", "socks5://")):
+            raw = f"http://{raw}"
+        return raw
 
 
 @lru_cache
