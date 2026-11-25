@@ -28,8 +28,8 @@ const routes = [
   {
     path: '/chat',
     name: 'chat',
-    component: () => import('@/views/PlaceholderView.vue'),
-    meta: { title: '对话', index: '04', milestone: 'M2' },
+    component: () => import('@/views/ChatView.vue'),
+    meta: { title: '对话' },
   },
   {
     path: '/lab',

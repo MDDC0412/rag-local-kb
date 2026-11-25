@@ -10,7 +10,7 @@ const nav = [
   { to: '/', title: '总览' },
   { to: '/providers', title: '模型供应商' },
   { to: '/documents', title: '文档库' },
-  { to: '/chat', title: '对话', milestone: 'M2' },
+  { to: '/chat', title: '对话' },
   { to: '/lab', title: 'RAG 实验室', milestone: 'M4' },
   { to: '/settings', title: '设置', milestone: 'M3' },
 ]

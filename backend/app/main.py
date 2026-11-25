@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api import chat as chat_api
 from app.api import chunk_samples as chunk_samples_api
 from app.api import documents as documents_api
 from app.api import providers as providers_api
@@ -109,3 +110,4 @@ async def health() -> dict[str, object]:
 app.include_router(providers_api.router)
 app.include_router(documents_api.router)
 app.include_router(chunk_samples_api.router)
+app.include_router(chat_api.router)
