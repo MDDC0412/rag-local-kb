@@ -23,16 +23,13 @@ class ChatOptions(BaseModel):
     expand_retry: bool = True
 
 
-class CitationItem(BaseModel):
-    """一条引用。"""
+class ModelSelection(BaseModel):
+    """会话级模型选择。None 表示跟随默认。"""
 
-    n: int
-    chunk_id: int
-    document_id: int
-    doc_name: str
-    page_no: int
-    snippet: str
-    score: float
+    llm_provider_id: int | None = None
+    embedding_provider_id: int | None = None
+    rerank_provider_id: int | None = None
+    use_rerank: bool = True
 
 
 class ConversationOut(BaseModel):
@@ -43,8 +40,37 @@ class ConversationOut(BaseModel):
     id: int
     kb_id: int
     title: str
+    llm_provider_id: int | None = None
+    embedding_provider_id: int | None = None
+    rerank_provider_id: int | None = None
+    use_rerank: bool = True
     created_at: datetime
     updated_at: datetime
+
+
+class ModelOption(BaseModel):
+    """一个可选模型（前端下拉用）。"""
+
+    id: int
+    name: str
+    model: str
+    kind: str
+    is_default: bool
+    protocol: str
+
+
+class ModelOptionsOut(BaseModel):
+    """三类模型的可选清单。"""
+
+    llm: list[ModelOption]
+    embedding: list[ModelOption]
+    rerank: list[ModelOption]
+    # 各类的默认值（没有则为 None），前端用来显示"跟随默认"
+    defaults: dict[str, int | None]
+
+
+class UpdateModelsIn(ModelSelection):
+    """更新会话使用的模型。"""
 
 
 class MessageOut(BaseModel):

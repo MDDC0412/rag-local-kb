@@ -219,6 +219,20 @@ class Conversation(Base, TimestampMixin):
     system_prompt_id: Mapped[int | None] = mapped_column(
         ForeignKey("prompt_templates.id", ondelete="SET NULL"), nullable=True
     )
+    # 会话级模型选择：NULL 表示"跟随该类型的默认供应商"。
+    # 为什么按会话存而不是全局一个默认：
+    # 1) 换向量模型会让旧向量失效（维度不同无法混用），必须能追溯每个会话用了哪个；
+    # 2) 同一知识库上用不同 LLM 对比效果，是学习 RAG 最直接的方式。
+    llm_provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("provider_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    embedding_provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("provider_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    rerank_provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey("provider_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    use_rerank: Mapped[bool] = mapped_column(Boolean, default=True)
     retrieval_options_json: Mapped[str] = mapped_column(Text, default="{}")
 
     messages: Mapped[list[Message]] = relationship(

@@ -18,9 +18,12 @@ from app.schemas.chat import (
     ConversationOut,
     CreateConversationIn,
     MessageOut,
+    ModelOption,
+    ModelOptionsOut,
     OptimizePromptIn,
     OptimizePromptOut,
     RenameConversationIn,
+    UpdateModelsIn,
 )
 from app.services import chat as chat_service
 from app.services.promptopt import optimize_question
@@ -77,6 +80,85 @@ async def delete_conversation(
 ) -> None:
     """删除会话。"""
     await chat_service.delete_conversation(session, conversation_id)
+
+
+@router.get("/models/options", response_model=ModelOptionsOut)
+async def model_options(session: AsyncSession = Depends(get_session)) -> ModelOptionsOut:
+    """三类模型的可选清单，供前端下拉选择。"""
+    from app.services.model_choice import list_enabled
+
+    async def collect(kind: str) -> tuple[list[ModelOption], int | None]:
+        rows = await list_enabled(session, kind)
+        options = [
+            ModelOption(
+                id=row.id,
+                name=row.name,
+                model=row.model,
+                kind=row.kind,
+                is_default=row.is_default,
+                protocol=row.protocol,
+            )
+            for row in rows
+        ]
+        default_id = next((row.id for row in rows if row.is_default), None)
+        if default_id is None and rows:
+            default_id = rows[0].id
+        return options, default_id
+
+    llm, llm_default = await collect("llm")
+    embedding, emb_default = await collect("embedding")
+    rerank, rerank_default = await collect("rerank")
+
+    return ModelOptionsOut(
+        llm=llm,
+        embedding=embedding,
+        rerank=rerank,
+        defaults={
+            "llm_provider_id": llm_default,
+            "embedding_provider_id": emb_default,
+            "rerank_provider_id": rerank_default,
+        },
+    )
+
+
+@router.put("/conversations/{conversation_id}/models", response_model=ConversationOut)
+async def update_conversation_models(
+    conversation_id: int,
+    payload: UpdateModelsIn,
+    session: AsyncSession = Depends(get_session),
+) -> ConversationOut:
+    """更新会话使用的模型。
+
+    显式指定的 id 会先校验存在且类型正确，避免"选了却没生效"这种静默失败。
+    """
+    from app.db.models import ProviderConfig
+
+    conversation = await chat_service.get_conversation(session, conversation_id)
+
+    for kind, value in (
+        ("llm", payload.llm_provider_id),
+        ("embedding", payload.embedding_provider_id),
+        ("rerank", payload.rerank_provider_id),
+    ):
+        if value is None:
+            continue
+        row = await session.get(ProviderConfig, value)
+        if row is None:
+            raise AppError(NOT_FOUND, f"供应商 #{value} 不存在", status_code=404)
+        if row.kind != kind:
+            raise AppError(
+                "PROVIDER_KIND_MISMATCH",
+                f"供应商 #{value} 是「{row.kind}」，不能用于 {kind}",
+                status_code=400,
+            )
+
+    conversation.llm_provider_id = payload.llm_provider_id
+    conversation.embedding_provider_id = payload.embedding_provider_id
+    conversation.rerank_provider_id = payload.rerank_provider_id
+    conversation.use_rerank = payload.use_rerank
+    await session.commit()
+    await session.refresh(conversation)
+    return ConversationOut.model_validate(conversation)
 
 
 @router.post("/chat/stream")

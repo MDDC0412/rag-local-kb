@@ -1,17 +1,26 @@
 """图的节点实现。每个节点单一职责，不写数据库。
 
 节点划分见 docs/DESIGN.md §3.5：
-    rewrite → retrieve → fuse → rerank → grade →(fallback | generate)
+    rewrite → recall → fuse → rerank → grade →(fallback | answer)
+    → generate（流式，在 API 层消费）
+
+每个节点都往 ``steps`` 里追加一条轨迹，前端右侧面板据此显示"进行到哪一步"。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 
 from app.graph.state import RagState
 from app.providers.base import ProviderSpec, embed_texts
-from app.services.retrieval import RetrievalOptions, retrieve
+from app.services.retrieval import (
+    RetrievalOptions,
+    apply_rerank,
+    fuse,
+    recall,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +39,41 @@ HYDE_TEMPLATE = """针对下面的问题，写一段 150-250 字的、像知识�
 问题：{question}"""
 
 
+def step(name: str, label: str, status: str, detail: str = "", elapsed_ms: int = 0) -> dict:
+    """构造一条轨迹记录。"""
+    return {
+        "name": name,
+        "label": label,
+        "status": status,  # running / done / skipped / failed
+        "detail": detail,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _append_step(state: RagState, record: dict) -> list[dict]:
+    """把新轨迹追加到已有轨迹后面。
+
+    注意：state["steps"] 是**累积**的（reducer 把各节点的追加合并在一起），
+    所以返回时必须给出完整列表，LangGraph 的 reducer 只做"old + new"，
+    如果这里只返回一条，会把之前的轨迹丢掉。
+
+    真正用于 SSE 的"本节点新增了哪条"，见 ``step_of``。
+    """
+    steps = list(state.get("steps") or [])
+    steps.append(record)
+    return steps
+
+
+def step_of(record: dict) -> dict:
+    """提取"这一条"轨迹，供 SSE 推送时精确去重。
+
+    SSE 推送需要知道"本节点新增了什么"，而 payload 里的 steps 是累积列表，
+    两者混用会导致重复推送。所以节点在 state 里另外存一份
+    ``last_step``，流式层只认它。
+    """
+    return record
+
+
 def _history_text(history: list[dict], limit: int = 6) -> str:
     """把最近几轮对话压成文本，供改写提示用。"""
     if not history:
@@ -46,73 +90,217 @@ def _history_text(history: list[dict], limit: int = 6) -> str:
 
 async def rewrite_node(state: RagState, *, chat_model=None) -> RagState:
     """按 recipe 决定是否改写查询；改写失败一律退回原问题。"""
+    started = time.perf_counter()
     question = state["question"]
     recipe = state.get("recipe", "off")
+    history = state.get("history") or []
 
-    if recipe == "off" or chat_model is None or not state.get("history"):
-        # 单轮对话或关闭改写：原样检索
-        if recipe == "hyde" and chat_model is not None:
-            return await _hyde(state, chat_model)
-        return {"rewritten": question}
+    if recipe == "off" or chat_model is None:
+        steps = _append_step(
+            state,
+            step("rewrite", "查询改写", "skipped", "已关闭，直接用原问题检索"),
+        )
+        return {"rewritten": question, "steps": steps, "last_step": steps[-1] if steps else None}
+
+    if recipe == "hyde":
+        try:
+            response = await chat_model.ainvoke(HYDE_TEMPLATE.format(question=question))
+            content = (
+                response.content if isinstance(response.content, str) else str(response.content)
+            )
+            hypothetical = (content or "").strip()
+            if not hypothetical:
+                raise ValueError("HyDE 返回空")
+            elapsed = int((time.perf_counter() - started) * 1000)
+            steps = _append_step(
+                state,
+                step(
+                    "rewrite",
+                    "HyDE 假设答案",
+                    "done",
+                    f"已生成 {len(hypothetical)} 字假设答案，用它检索",
+                    elapsed,
+                ),
+            )
+            return {
+                "rewritten": hypothetical,
+                "steps": steps,
+                "last_step": steps[-1] if steps else None,
+            }
+        except Exception as exc:
+            logger.warning("HyDE 失败，回退原问题：%s", exc)
+            steps = _append_step(
+                state,
+                step("rewrite", "HyDE 假设答案", "failed", f"失败，已回退原问题：{exc}"),
+            )
+            return {
+                "rewritten": question,
+                "steps": steps,
+                "last_step": steps[-1] if steps else None,
+            }
+
+    if not history:
+        steps = _append_step(
+            state,
+            step("rewrite", "查询改写", "skipped", "首轮对话无需改写"),
+        )
+        return {"rewritten": question, "steps": steps, "last_step": steps[-1] if steps else None}
 
     try:
-        prompt = REWRITE_TEMPLATE.format(
-            history=_history_text(state.get("history", [])), question=question
-        )
+        prompt = REWRITE_TEMPLATE.format(history=_history_text(history), question=question)
         response = await chat_model.ainvoke(prompt)
         content = response.content if isinstance(response.content, str) else str(response.content)
         rewritten = (content or "").strip().strip('"').strip()
-        # 模型偶尔会啰嗦，太长就当失败
         if not rewritten or len(rewritten) > max(200, len(question) * 4):
             raise ValueError("改写结果异常")
+        elapsed = int((time.perf_counter() - started) * 1000)
+        steps = _append_step(
+            state,
+            step("rewrite", "追问改写", "done", f"已改写为「{rewritten[:40]}」", elapsed),
+        )
         logger.info("查询改写：%s → %s", question[:40], rewritten[:40])
-        return {"rewritten": rewritten}
+        return {"rewritten": rewritten, "steps": steps, "last_step": steps[-1] if steps else None}
     except Exception as exc:
         logger.warning("查询改写失败，回退原问题：%s", exc)
-        return {"rewritten": question}
+        steps = _append_step(
+            state,
+            step("rewrite", "追问改写", "failed", f"失败，已回退原问题：{exc}"),
+        )
+        return {"rewritten": question, "steps": steps, "last_step": steps[-1] if steps else None}
 
 
-async def _hyde(state: RagState, chat_model) -> RagState:
-    """HyDE：先生成假设答案，再用它去检索。"""
-    question = state["question"]
+async def embed_node(state: RagState, *, embed_spec: ProviderSpec) -> RagState:
+    """把查询文本向量化。
+
+    单独成一个节点而不是塞进召回里：向量化本身要出网，
+    是最容易慢/失败的一步，轨迹里必须能单独看到它的耗时。
+    """
+    started = time.perf_counter()
+    query = state.get("rewritten") or state["question"]
     try:
-        response = await chat_model.ainvoke(HYDE_TEMPLATE.format(question=question))
-        content = response.content if isinstance(response.content, str) else str(response.content)
-        hypothetical = (content or "").strip()
-        if not hypothetical:
-            raise ValueError("HyDE 返回空")
-        logger.info("HyDE 已生成假设答案（%s 字）", len(hypothetical))
-        return {"rewritten": hypothetical}
+        vector = (await embed_texts(embed_spec, [query]))[0]
+        elapsed = int((time.perf_counter() - started) * 1000)
+        steps = _append_step(
+            state,
+            step(
+                "embed",
+                "查询向量化",
+                "done",
+                f"{len(vector)} 维 · {embed_spec.model}",
+                elapsed,
+            ),
+        )
+        return {"query_vector": vector, "steps": steps, "last_step": steps[-1] if steps else None}
     except Exception as exc:
-        logger.warning("HyDE 失败，回退原问题：%s", exc)
-        return {"rewritten": question}
+        steps = _append_step(state, step("embed", "查询向量化", "failed", f"失败：{exc}"))
+        raise
 
 
-async def retrieve_node(
+async def recall_node(
     state: RagState,
     *,
     session,
-    embed_spec: ProviderSpec,
-    rerank_spec: ProviderSpec | None = None,
 ) -> RagState:
-    """检索节点：算查询向量 → 向量+BM25 → RRF → rerank。"""
+    """召回节点：向量检索 + BM25 检索。"""
+    started = time.perf_counter()
     query = state.get("rewritten") or state["question"]
     options: RetrievalOptions = state.get("options") or RetrievalOptions()
-    expanded = bool(state.get("expanded", False))
+    factor = 2 if state.get("expanded") else 1
 
-    query_vector = (await embed_texts(embed_spec, [query]))[0]
-
-    hits, debug = await retrieve(
+    vector_hits, bm25_hits = await recall(
         session,
         kb_id=state["kb_id"],
         query=query,
-        query_vector=query_vector,
-        embed_spec=embed_spec,
-        rerank_spec=rerank_spec,
+        query_vector=state["query_vector"],
         options=options,
-        expand=expanded,
+        factor=factor,
     )
-    return {"query_vector": query_vector, "hits": hits, "debug": debug}
+    elapsed = int((time.perf_counter() - started) * 1000)
+    steps = _append_step(
+        state,
+        step(
+            "recall",
+            "向量 + BM25 召回",
+            "done",
+            f"向量 {len(vector_hits)} 条 · BM25 {len(bm25_hits)} 条"
+            + ("（已扩召回×2）" if state.get("expanded") else ""),
+            elapsed,
+        ),
+    )
+    return {
+        "vector_hits": vector_hits,
+        "bm25_hits": bm25_hits,
+        "steps": steps,
+        "last_step": steps[-1] if steps else None,
+    }
+
+
+async def fuse_node(state: RagState, *, session) -> RagState:
+    """融合节点：RRF 合并两路排名。"""
+    started = time.perf_counter()
+    options: RetrievalOptions = state.get("options") or RetrievalOptions()
+    factor = 2 if state.get("expanded") else 1
+
+    hits, debug = await fuse(
+        session,
+        vector_hits=state.get("vector_hits") or [],
+        bm25_hits=state.get("bm25_hits") or [],
+        options=options,
+        factor=factor,
+    )
+    elapsed = int((time.perf_counter() - started) * 1000)
+    steps = _append_step(
+        state,
+        step(
+            "fuse",
+            "RRF 融合",
+            "done",
+            f"融合后 {len(hits)} 条 · k={options.rrf_k}",
+            elapsed,
+        ),
+    )
+    return {"hits": hits, "debug": debug, "steps": steps, "last_step": steps[-1] if steps else None}
+
+
+async def rerank_node(
+    state: RagState,
+    *,
+    rerank_spec=None,
+) -> RagState:
+    """精排节点：rerank 重排，失败降级。"""
+    started = time.perf_counter()
+    options: RetrievalOptions = state.get("options") or RetrievalOptions()
+    query = state.get("rewritten") or state["question"]
+    debug = state.get("debug")
+    factor = 2 if state.get("expanded") else 1
+
+    if rerank_spec is None or not options.use_rerank:
+        hits = sorted(state.get("hits") or [], key=lambda hit: hit.score_fused, reverse=True)[
+            : options.rerank_top_n
+        ]
+        steps = _append_step(
+            state,
+            step("rerank", "精排", "skipped", "未配置重排模型或已关闭，按融合分排序"),
+        )
+        return {"hits": hits, "steps": steps, "last_step": steps[-1] if steps else None}
+
+    hits, debug = await apply_rerank(
+        state.get("hits") or [],
+        query=query,
+        rerank_spec=rerank_spec,
+        top_n=options.rerank_top_n,
+        debug=debug,  # type: ignore[arg-type]
+        factor=factor,
+    )
+    elapsed = int((time.perf_counter() - started) * 1000)
+    status = "done" if debug and debug.used_rerank else "failed"
+    detail = (
+        f"精排后取前 {len(hits)} 条，最高分 {hits[0].score:.4f}"
+        if hits and debug and debug.used_rerank
+        else f"重排失败，已降级为融合分排序：{getattr(debug, 'rerank_error', '')[:60]}"
+    )
+    steps = _append_step(state, step("rerank", "精排", status, detail, elapsed))
+    return {"hits": hits, "debug": debug, "steps": steps, "last_step": steps[-1] if steps else None}
 
 
 def grade_node(state: RagState) -> RagState:
@@ -123,31 +311,79 @@ def grade_node(state: RagState) -> RagState:
     """
     options: RetrievalOptions = state.get("options") or RetrievalOptions()
     hits = state.get("hits") or []
+    threshold = options.score_threshold
+
     if not hits:
-        return {"low_score": True}
+        steps = _append_step(state, step("grade", "质量判定", "failed", "没有检索到任何内容"))
+        return {"low_score": True, "steps": steps, "last_step": steps[-1] if steps else None}
 
     best_vector = max((hit.score_vector for hit in hits), default=0.0)
-    low = best_vector < options.score_threshold
-    logger.info(
-        "grade：最佳向量相似度 %.3f，阈值 %.2f → %s",
-        best_vector,
-        options.score_threshold,
-        "不足" if low else "充分",
+    # rerank 分如果可用，也用来看一眼（仅展示，判定仍以向量相似度为准）
+    best_rerank = max((hit.score for hit in hits), default=0.0)
+    low = best_vector < threshold
+
+    detail = f"最佳向量相似度 {best_vector:.3f}，阈值 {threshold:.2f} → " + (
+        "分数不足" if low else "分数足够"
     )
-    return {"low_score": low}
+    if state.get("debug") and state["debug"].used_rerank:  # type: ignore[union-attr]
+        detail += f"；精排最高 {best_rerank:.3f}"
+
+    steps = _append_step(state, step("grade", "质量判定", "done", detail))
+    logger.info("grade：%s", detail)
+    return {"low_score": low, "steps": steps, "last_step": steps[-1] if steps else None}
 
 
 def route_after_grade(state: RagState) -> str:
-    """条件边：分数不足且还没重试过 → 扩召回；否则直接生成。"""
+    """条件边：分数不足且还没重试过 → 扩召回；否则直接生成。
+
+    额外保护：如果这次召回**一条都没拿到**，扩召回也没用
+    （通常意味着向量库是空的，比如文档没入库或换了 embedding 模型），
+    直接去生成"没找到"的回答，避免无意义地重跑一遍链路。
+    """
     options: RetrievalOptions = state.get("options") or RetrievalOptions()
+    if not state.get("hits"):
+        return "answer"
     if state.get("low_score") and options.expand_retry and not state.get("expanded"):
         return "fallback"
-    return "generate"
+    return "answer"
 
 
 def fallback_node(state: RagState) -> RagState:
     """扩召回重试（最多一次，由 route 保证）。"""
-    return {"expanded": True}
+    steps = _append_step(
+        state,
+        step("fallback", "扩召回重试", "done", "分数不足，召回数量翻倍再检索一次"),
+    )
+    return {"expanded": True, "steps": steps, "last_step": steps[-1] if steps else None}
+
+
+def build_context(hits: list) -> str:
+    """把命中片段拼成带编号的参考资料。
+
+    parent_child 策略下优先给父块（上下文更完整），否则给命中块本身。
+    """
+    blocks = []
+    for index, hit in enumerate(hits, start=1):
+        heading = f"[{index}] 《{hit.doc_name or '未知文档'}》第 {hit.page_no} 段"
+        body = hit.parent_content.strip() if hit.parent_content.strip() else hit.content
+        blocks.append(f"{heading}\n{body}")
+    return "\n\n".join(blocks)
+
+
+def answer_node(state: RagState) -> RagState:
+    """答案组织节点：拼好上下文，真正的流式生成在 API 层完成。"""
+    hits = state.get("hits") or []
+    context = build_context(hits)
+    steps = _append_step(
+        state,
+        step(
+            "answer",
+            "组织答案",
+            "done",
+            f"把 {len(hits)} 段资料（{len(context)} 字）交给模型",
+        ),
+    )
+    return {"steps": steps, "last_step": steps[-1] if steps else None, "context": context}
 
 
 SYSTEM_FALLBACK = """你是用户的私人知识库助手。请严格依据【参考资料】回答问题。
@@ -160,21 +396,10 @@ SYSTEM_FALLBACK = """你是用户的私人知识库助手。请严格依据【�
 5. 不要描述你的检索过程，直接给答案。"""
 
 
-def build_context(hits: list) -> str:
-    """把命中片段拼成带编号的参考资料。"""
-    blocks = []
-    for index, hit in enumerate(hits, start=1):
-        heading = f"[{index}] 《{hit.doc_name or '未知文档'}》第 {hit.page_no} 段"
-        # parent_child 策略下优先给父块（上下文更完整）
-        body = hit.parent_content.strip() if hit.parent_content.strip() else hit.content
-        blocks.append(f"{heading}\n{body}")
-    return "\n\n".join(blocks)
-
-
 def build_messages(state: RagState, *, system_prompt: str | None = None) -> list[dict]:
     """组装送给模型的消息列表。"""
     hits = state.get("hits") or []
-    context = build_context(hits)
+    context = state.get("context") or ""
     system = system_prompt or SYSTEM_FALLBACK
 
     messages: list[dict] = [{"role": "system", "content": system}]

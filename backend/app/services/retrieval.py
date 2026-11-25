@@ -13,6 +13,11 @@ RRF 只看排名不看分数，所以天然免疫"两路分数量纲不同"这�
     score(d) = Σ 1 / (k + rank_i(d))
 langchain 的 EnsembleRetriever 在 v1 被挪进了 langchain-classic，
 位置还会随版本变；而这个公式本身简单到没有任何值得封装的地方。
+
+为什么拆成 recall / fuse / rerank 三个函数
+------------------------------------------
+1. LangGraph 里它们是独立节点 —— 条件边和过程进度都依赖这个粒度；
+2. 前端"轨迹面板"要能看到"正在召回 / 正在融合 / 正在重排"的分步状态。
 """
 
 from __future__ import annotations
@@ -150,7 +155,7 @@ def invalidate_bm25(kb_id: int) -> None:
     _bm25_dirty.add(kb_id)
 
 
-async def _get_bm25(session: AsyncSession, kb_id: int) -> BM25Index:
+async def get_bm25(session: AsyncSession, kb_id: int) -> BM25Index:
     """取（或重建）某知识库的 BM25 索引。"""
     if kb_id not in _bm25_dirty and kb_id in _bm25_cache:
         return _bm25_cache[kb_id]
@@ -176,7 +181,7 @@ def rrf_fuse(ranked_lists: list[list[int]], k: int = DEFAULT_RRF_K) -> dict[int,
     return scores
 
 
-async def _load_chunk_map(session: AsyncSession, chunk_ids: list[int]) -> dict[int, Chunk]:
+async def load_chunk_map(session: AsyncSession, chunk_ids: list[int]) -> dict[int, Chunk]:
     """批量取分块详情。"""
     if not chunk_ids:
         return {}
@@ -198,6 +203,24 @@ async def _doc_names(session: AsyncSession, doc_ids: set[int]) -> dict[int, str]
     return {row[0]: row[1] for row in rows}
 
 
+@dataclass(slots=True)
+class RetrievalOptions:
+    """一次检索的参数。"""
+
+    vector_top_n: int = 20
+    bm25_top_n: int = 20
+    fuse_top_n: int = 20
+    rerank_top_n: int = 5
+    rrf_k: int = DEFAULT_RRF_K
+    use_rerank: bool = True
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD
+    # 低分时是否扩召回重试（属于策略开关，放在这里因为条件边要用到它）
+    expand_retry: bool = True
+
+
+# --------------------------------------------------------------------------- #
+# 分步函数（对应图里的独立节点）
+# --------------------------------------------------------------------------- #
 async def vector_search(
     session: AsyncSession, kb_id: int, query_vector: list[float], top_n: int
 ) -> list[tuple[int, float]]:
@@ -220,57 +243,45 @@ async def vector_search(
             chunk_id = int(str(raw_id).lstrip("c"))
         except ValueError:
             continue
-        # cosine 距离 → 相似度
         hits.append((chunk_id, 1.0 - float(distance)))
     return hits
 
 
-@dataclass(slots=True)
-class RetrievalOptions:
-    """一次检索的参数。"""
-
-    vector_top_n: int = 20
-    bm25_top_n: int = 20
-    fuse_top_n: int = 20
-    rerank_top_n: int = 5
-    rrf_k: int = DEFAULT_RRF_K
-    use_rerank: bool = True
-    score_threshold: float = DEFAULT_SCORE_THRESHOLD
-
-
-async def retrieve(
+async def recall(
     session: AsyncSession,
     *,
     kb_id: int,
     query: str,
     query_vector: list[float],
-    embed_spec,
-    rerank_spec=None,
-    options: RetrievalOptions | None = None,
-    expand: bool = False,
+    options: RetrievalOptions,
+    factor: int = 1,
+) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+    """召回阶段：向量 + BM25 两路并行（顺序执行但互不依赖）。"""
+    vector_hits = await vector_search(session, kb_id, query_vector, options.vector_top_n * factor)
+    bm25_index = await get_bm25(session, kb_id)
+    bm25_hits = bm25_index.search(query, options.bm25_top_n * factor)
+    return vector_hits, bm25_hits
+
+
+async def fuse(
+    session: AsyncSession,
+    *,
+    vector_hits: list[tuple[int, float]],
+    bm25_hits: list[tuple[int, float]],
+    options: RetrievalOptions,
+    factor: int = 1,
 ) -> tuple[list[Hit], RetrievalDebug]:
-    """完整检索链路。expand=True 时把召回数量翻倍（低分兜底用）。"""
-    opts = options or RetrievalOptions()
-    factor = 2 if expand else 1
-
-    # 1) 向量召回
-    vector_hits = await vector_search(session, kb_id, query_vector, opts.vector_top_n * factor)
-
-    # 2) BM25 召回
-    bm25_index = await _get_bm25(session, kb_id)
-    bm25_hits = bm25_index.search(query, opts.bm25_top_n * factor)
-
+    """融合阶段：RRF 合并两路排名，并补齐分块详情。"""
     vector_ids = [chunk_id for chunk_id, _ in vector_hits]
     bm25_ids = [chunk_id for chunk_id, _ in bm25_hits]
-    vector_scores = {chunk_id: score for chunk_id, score in vector_hits}
-    bm25_scores = {chunk_id: score for chunk_id, score in bm25_hits}
+    vector_scores = dict(vector_hits)
+    bm25_scores = dict(bm25_hits)
 
-    # 3) RRF 融合
-    fused_scores = rrf_fuse([vector_ids, bm25_ids], k=opts.rrf_k)
+    fused_scores = rrf_fuse([vector_ids, bm25_ids], k=options.rrf_k)
     fused_ids = sorted(fused_scores, key=lambda cid: fused_scores[cid], reverse=True)
-    fused_ids = fused_ids[: opts.fuse_top_n * factor]
+    fused_ids = fused_ids[: options.fuse_top_n * factor]
 
-    chunk_map = await _load_chunk_map(session, fused_ids)
+    chunk_map = await load_chunk_map(session, fused_ids)
     names = await _doc_names(session, {chunk.document_id for chunk in chunk_map.values()})
 
     rank_vector = {chunk_id: index for index, chunk_id in enumerate(vector_ids, start=1)}
@@ -300,8 +311,7 @@ async def retrieve(
         )
 
     debug = RetrievalDebug(
-        query=query,
-        expanded=expand,
+        query="",
         vector=[
             {
                 "chunk_id": chunk_id,
@@ -314,11 +324,7 @@ async def retrieve(
             for index, (chunk_id, score) in enumerate(vector_hits, start=1)
         ],
         bm25=[
-            {
-                "chunk_id": chunk_id,
-                "rank": index,
-                "score": round(score, 4),
-            }
+            {"chunk_id": chunk_id, "rank": index, "score": round(score, 4)}
             for index, (chunk_id, score) in enumerate(bm25_hits, start=1)
         ],
         fused=[
@@ -332,46 +338,89 @@ async def retrieve(
             for index, hit in enumerate(hits, start=1)
         ],
     )
+    return hits, debug
 
-    # 4) rerank 精排（可关、可失败降级）
-    if opts.use_rerank and rerank_spec is not None and hits:
-        from app.providers import base as provider_base
 
-        try:
-            result = await provider_base.rerank(
-                rerank_spec,
-                query,
-                [hit.content for hit in hits],
-                top_n=min(opts.rerank_top_n * factor, len(hits)),
-            )
-            reranked: list[Hit] = []
-            for item in result:
-                index = item["index"]
-                if 0 <= index < len(hits):
-                    hit = hits[index]
-                    hit.score = float(item["score"])
-                    reranked.append(hit)
-            if reranked:
-                hits = reranked
-                debug.used_rerank = True
-                debug.reranked = [
-                    {
-                        "chunk_id": hit.chunk_id,
-                        "rank": index,
-                        "score": round(hit.score, 4),
-                        "snippet": hit.content[:80],
-                        "page_no": hit.page_no,
-                    }
-                    for index, hit in enumerate(hits, start=1)
-                ]
-        except Exception as exc:
-            debug.rerank_error = str(exc)[:200]
-            logger.warning("rerank 失败，降级为 RRF 排序：%s", exc)
+async def apply_rerank(
+    hits: list[Hit],
+    *,
+    query: str,
+    rerank_spec,
+    top_n: int,
+    debug: RetrievalDebug,
+    factor: int = 1,
+) -> tuple[list[Hit], RetrievalDebug]:
+    """精排阶段：rerank 重排；失败降级为 RRF 顺序，不阻断问答。"""
+    if rerank_spec is None or not hits:
+        return sorted(hits, key=lambda hit: hit.score_fused, reverse=True)[:top_n], debug
 
-    if not debug.used_rerank:
-        # 没精排时用融合分做最终排序，只取前 N
-        hits = sorted(hits, key=lambda hit: hit.score_fused, reverse=True)
+    from app.providers import base as provider_base
 
-    final = hits[: opts.rerank_top_n]
-    debug.top_score = round(final[0].score, 4) if final else 0.0
-    return final, debug
+    try:
+        result = await provider_base.rerank(
+            rerank_spec,
+            query,
+            [hit.content for hit in hits],
+            top_n=min(top_n * factor, len(hits)),
+        )
+        reranked: list[Hit] = []
+        for item in result:
+            index = item["index"]
+            if 0 <= index < len(hits):
+                hit = hits[index]
+                hit.score = float(item["score"])
+                reranked.append(hit)
+        if not reranked:
+            raise ValueError("重排返回空结果")
+
+        debug.used_rerank = True
+        debug.reranked = [
+            {
+                "chunk_id": hit.chunk_id,
+                "rank": index,
+                "score": round(hit.score, 4),
+                "snippet": hit.content[:80],
+                "page_no": hit.page_no,
+            }
+            for index, hit in enumerate(reranked, start=1)
+        ]
+        return reranked[:top_n], debug
+    except Exception as exc:
+        debug.rerank_error = str(exc)[:200]
+        logger.warning("rerank 失败，降级为 RRF 排序：%s", exc)
+        return sorted(hits, key=lambda hit: hit.score_fused, reverse=True)[:top_n], debug
+
+
+async def retrieve(
+    session: AsyncSession,
+    *,
+    kb_id: int,
+    query: str,
+    query_vector: list[float],
+    embed_spec=None,
+    rerank_spec=None,
+    options: RetrievalOptions | None = None,
+    expand: bool = False,
+) -> tuple[list[Hit], RetrievalDebug]:
+    """一步到位的检索（给测试与调试用；图里走分步节点）。"""
+    opts = options or RetrievalOptions()
+    factor = 2 if expand else 1
+
+    vector_hits, bm25_hits = await recall(
+        session, kb_id=kb_id, query=query, query_vector=query_vector, options=opts, factor=factor
+    )
+    hits, debug = await fuse(
+        session, vector_hits=vector_hits, bm25_hits=bm25_hits, options=opts, factor=factor
+    )
+    debug.query = query
+    debug.expanded = expand
+    hits, debug = await apply_rerank(
+        hits,
+        query=query,
+        rerank_spec=rerank_spec,
+        top_n=opts.rerank_top_n,
+        debug=debug,
+        factor=factor,
+    )
+    debug.top_score = round(hits[0].score, 4) if hits else 0.0
+    return hits, debug

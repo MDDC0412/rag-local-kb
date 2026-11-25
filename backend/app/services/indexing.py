@@ -5,12 +5,21 @@
 - Chroma 的 id 直接用 SQLite 里 chunk 的主键（字符串），删除/重建时能精确对应；
 - metadata 存 doc_id / kb_id / page_no / seq，检索时可过滤也能回查原文；
 - SQLite 是唯一事实源：Chroma 里的东西随时可以整库重建。
+
+⚠️ 单进程约束
+-------------
+Chroma 嵌入式（PersistentClient）底层是 SQLite，**同一数据目录不能被多个进程同时写**，
+否则会出现"这个进程写进去了、那个进程查不到"的诡异现象（踩过这个坑）。
+所以：
+- 服务端只允许 uvicorn 单进程运行，不要加 --workers N；
+- 排查问题时若要单独跑脚本查 Chroma，先停掉后端，或改用 HTTP 接口查。
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+import threading
 from dataclasses import dataclass
 
 import chromadb
@@ -26,6 +35,8 @@ logger = logging.getLogger(__name__)
 COLLECTION = "rag_chunks"
 
 _client: chromadb.ClientAPI | None = None
+# 串行化写操作：Chroma 客户端不是线程安全的
+_write_lock = threading.Lock()
 
 
 def get_client() -> chromadb.ClientAPI:
@@ -89,24 +100,60 @@ async def embed_and_store(
             status_code=400,
         ) from exc
 
+    dimensions = {len(vector) for vector in vectors}
+    if len(dimensions) != 1:
+        raise AppError(
+            PROVIDER_UNAVAILABLE,
+            f"同一批向量维度不一致（{sorted(dimensions)}），请检查向量模型是否稳定",
+        )
+    _ensure_collection_dimension(dimensions.pop())
+
     collection = get_collection()
     ids = [f"c{item.chunk_id}" for item in items]
-    collection.upsert(
-        ids=ids,
-        embeddings=vectors,
-        documents=texts,
-        metadatas=[
-            {
-                "doc_id": item.document_id,
-                "kb_id": item.kb_id,
-                "page_no": item.page_no,
-                "seq": item.seq,
-            }
-            for item in items
-        ],
-    )
+    with _write_lock:
+        collection.upsert(
+            ids=ids,
+            embeddings=vectors,
+            documents=texts,
+            metadatas=[
+                {
+                    "doc_id": item.document_id,
+                    "kb_id": item.kb_id,
+                    "page_no": item.page_no,
+                    "seq": item.seq,
+                }
+                for item in items
+            ],
+        )
     logger.info("已写入 %s 条向量（集合 %s）", len(items), COLLECTION)
     return len(items)
+
+
+def _ensure_collection_dimension(dim: int) -> None:
+    """检查集合维度是否与本次向量一致。
+
+    Chroma 的维度是**首次写入时锁定**的：先用了 1024 维模型，再换 768 维的，
+    写入会直接抛 InvalidArgumentError. 这里提前给出人话提示。
+    """
+    collection = get_collection()
+    if collection.count() == 0:
+        return
+    try:
+        sample = collection.get(limit=1, include=["embeddings"])
+        stored = sample.get("embeddings")
+        if stored is None or len(stored) == 0:
+            return
+        existing_dim = len(stored[0])
+    except Exception:
+        return
+
+    if existing_dim != dim:
+        raise AppError(
+            "EMBEDDING_DIM_MISMATCH",
+            f"向量库现有维度是 {existing_dim}，当前模型输出 {dim} 维，两者无法混用。"
+            f"请换回原向量模型，或删除所有文档后重建向量库",
+            status_code=400,
+        )
 
 
 def delete_document_vectors(document_id: int) -> int:

@@ -1,11 +1,13 @@
-"""对话业务：会话持久化 + 流式问答 + 引用溯源。
+"""对话业务：会话持久化 + 流式问答 + 引用溯源 + 过程轨迹。
 
 关键取舍
 --------
 - **会话存 SQLite，不用 LangGraph checkpointer**：checkpointer 会把消息存成它自己的
   格式，和我们的 messages 表变成两个真相源，最终出现"前端显示的和模型看到的不一致"
-  这种极难查的 bug。历史消息以 SQLite 为准，每次通过 history 字段传进图。
+  这种极难查的 bug。历史以 SQLite 为准，每次通过 history 字段传进图。
 - 图里不写库；落库统一在这里做，方便测试与重放。
+- 用 ``graph.astream(stream_mode="updates")`` 逐节点消费，每个节点完成就推一条
+  ``step`` 事件 —— 前端右侧的轨迹面板据此显示"进行到哪一步"。
 """
 
 from __future__ import annotations
@@ -18,21 +20,14 @@ from datetime import UTC
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NOT_FOUND, PROVIDER_NOT_FOUND, AppError
+from app.core.errors import NOT_FOUND, AppError
 from app.db.models import Conversation, Message, PromptTemplate
 from app.db.session import SessionLocal
 from app.graph.build import build_graph
-from app.graph.nodes import (
-    build_messages,
-    debug_to_dict,
-    dumps,
-    extract_citations,
-)
+from app.graph.nodes import build_messages, debug_to_dict, dumps, extract_citations
 from app.graph.state import RagState
 from app.providers.llm import build_chat_model
-from app.providers.registry import resolve_spec
 from app.schemas.chat import ChatOptions
-from app.services import documents as doc_service
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +133,7 @@ async def _system_prompt(session: AsyncSession) -> str | None:
 # 流式问答
 # --------------------------------------------------------------------------- #
 def _sse(event: str, data: dict) -> str:
-    """拼一条 SSE 消息。data 里不能有换行，JSON 序列化天然满足。"""
+    """拼一条 SSE 消息。"""
     return f"event: {event}\ndata: {dumps(data)}\n\n"
 
 
@@ -150,8 +145,11 @@ async def stream_chat(
 ) -> AsyncIterator[str]:
     """流式问答。产出已格式化好的 SSE 文本块。
 
-    事件顺序：retrieval → delta* → citations → done
-    任何异常都会补发 error 事件，绝不让前端只看到断流。
+    事件顺序：
+        started → step* → retrieval → step(生成中) → delta* → citations → done
+
+    ``step`` 是过程轨迹：rewrite / embed / recall / fuse / rerank / grade /
+    fallback / answer / generate，前端右侧面板逐条点亮。
     """
     started = time.perf_counter()
     # 独立 session：SSE 生成器活得比请求依赖更长，不能复用请求级 session
@@ -194,31 +192,27 @@ async def _stream_impl(
     ]
 
     # 2) 落库用户消息
-    user_msg = Message(conversation_id=conversation_id, role="user", content=question)
-    session.add(user_msg)
+    session.add(Message(conversation_id=conversation_id, role="user", content=question))
     await session.commit()
 
-    # 3) 解析供应商
-    try:
-        llm_spec = await resolve_spec(session, "llm")
-    except AppError as exc:
-        raise AppError(
-            PROVIDER_NOT_FOUND,
-            f"还没有可用的对话模型：{exc.message}",
-            status_code=400,
-        ) from exc
-    embed_spec = await doc_service.resolve_embedding_spec(session, conversation.kb_id)
+    # 3) 解析模型：优先用会话里选定的，没选才跟随默认
+    from app.services.model_choice import ModelChoice, resolve_models
 
-    rerank_spec = None
-    if options.use_rerank:
-        try:
-            rerank_spec = await resolve_spec(session, "rerank")
-        except AppError:
-            logger.info("没有重排模型，跳过精排")
+    choice = ModelChoice(
+        llm_provider_id=conversation.llm_provider_id,
+        embedding_provider_id=conversation.embedding_provider_id,
+        rerank_provider_id=conversation.rerank_provider_id,
+        use_rerank=conversation.use_rerank,
+    )
+    llm_spec, embed_spec, rerank_spec = await resolve_models(session, choice)
 
-    chat_model = build_chat_model(llm_spec, streaming=False)
+    rerank_note = ""
+    if options.use_rerank and rerank_spec is None:
+        rerank_note = "没有可用的重排模型，本次跳过精排"
+    elif not conversation.use_rerank:
+        rerank_note = "会话已关闭重排"
 
-    # 4) 跑图（rewrite → retrieve → grade → fallback? → generate 占位）
+    # 4) 跑图，逐节点推送轨迹
     from app.services.retrieval import RetrievalOptions
 
     retrieval_options = RetrievalOptions(
@@ -228,6 +222,7 @@ async def _stream_impl(
         rrf_k=options.rrf_k,
         use_rerank=options.use_rerank,
         score_threshold=options.score_threshold,
+        expand_retry=options.expand_retry,
     )
     state: RagState = {
         "question": question,
@@ -236,21 +231,60 @@ async def _stream_impl(
         "options": retrieval_options,
         "recipe": options.rewrite,
         "expanded": False,
+        "steps": [],
     }
 
     graph = build_graph(
         session=session,
-        chat_model=chat_model if options.rewrite != "off" else None,
+        chat_model=build_chat_model(llm_spec, streaming=False)
+        if options.rewrite != "off"
+        else None,
         embed_spec=embed_spec,
-        rerank_spec=rerank_spec,
+        rerank_spec=rerank_spec if options.use_rerank else None,
     )
-    final_state = await graph.ainvoke(state)
+
+    yield _sse(
+        "started",
+        {
+            "question": question,
+            "rewrite": options.rewrite,
+            "use_rerank": rerank_spec is not None,
+            "note": rerank_note,
+            "models": {
+                "llm": {"name": llm_spec.name, "model": llm_spec.model},
+                "embedding": {"name": embed_spec.name, "model": embed_spec.model},
+                "rerank": (
+                    {"name": rerank_spec.name, "model": rerank_spec.model}
+                    if rerank_spec is not None
+                    else None
+                ),
+            },
+        },
+    )
+
+    final_state: dict = dict(state)
+    all_steps: list[dict] = []
+    async for update in graph.astream(state, stream_mode="updates"):
+        # update 形如 {"recall": {"vector_hits": ..., "steps": [累积列表], "last_step": {...}}}
+        # steps 是累积的（reducer 合并），last_step 才是"本节点新增的那一条"。
+        # 用 last_step 推送可以精确去重，避免重复发同一条轨迹。
+        for node_name, payload in update.items():
+            if not isinstance(payload, dict):
+                continue
+            record = payload.get("last_step")
+            if record:
+                all_steps.append(record)
+                yield _sse("step", record)
+            for key, value in payload.items():
+                if key not in ("steps", "last_step"):
+                    final_state[key] = value
+            logger.debug("节点 %s 完成", node_name)
 
     hits = final_state.get("hits") or []
     debug = final_state.get("debug")
     rewritten = final_state.get("rewritten") or question
 
-    # 5) 先发检索结果，前端可以先显示"参考了 N 段"
+    # 5) 发检索结果，前端可以先把"参考了哪几段"显示出来
     yield _sse(
         "retrieval",
         {
@@ -274,15 +308,29 @@ async def _stream_impl(
     # 6) 流式生成
     system_prompt = await _system_prompt(session)
     messages = build_messages(final_state, system_prompt=system_prompt)
+    yield _sse(
+        "step",
+        {
+            "name": "generate",
+            "label": "模型生成",
+            "status": "running",
+            "detail": f"已提交 {len(messages)} 条消息",
+            "elapsed_ms": 0,
+        },
+    )
 
     stream_model = build_chat_model(llm_spec, streaming=True)
     answer_parts: list[str] = []
     usage: dict = {}
+    gen_started = time.perf_counter()
+    first_token_ms = 0
 
     try:
         async for event in stream_model.astream(messages):
             text = event.content if isinstance(event.content, str) else str(event.content or "")
             if text:
+                if not answer_parts:
+                    first_token_ms = int((time.perf_counter() - gen_started) * 1000)
                 answer_parts.append(text)
                 yield _sse("delta", {"text": text})
             meta = getattr(event, "usage_metadata", None)
@@ -296,17 +344,36 @@ async def _stream_impl(
         ) from exc
 
     answer = "".join(answer_parts)
+    gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
+    yield _sse(
+        "step",
+        {
+            "name": "generate",
+            "label": "模型生成",
+            "status": "done",
+            "detail": f"首字 {first_token_ms}ms · 共 {len(answer)} 字",
+            "elapsed_ms": gen_elapsed,
+        },
+    )
+
     citations = extract_citations(answer, hits)
     latency = int((time.perf_counter() - started) * 1000)
 
-    # 7) 落库助手消息（含引用与检索详情）
+    # 7) 落库助手消息（含引用、检索详情、过程轨迹）
+    steps = all_steps
     assistant = Message(
         conversation_id=conversation_id,
         role="assistant",
         content=answer,
         rewritten_query=rewritten if rewritten != question else "",
         citations_json=dumps(citations),
-        retrieval_json=dumps(debug_to_dict(debug)) if debug else "{}",
+        retrieval_json=dumps(
+            {
+                **(debug_to_dict(debug) if debug else {}),
+                "steps": steps,
+                "latency_ms": latency,
+            }
+        ),
         token_usage=int(usage.get("total_tokens", 0) or 0),
         latency_ms=latency,
     )
@@ -323,5 +390,6 @@ async def _stream_impl(
             "usage": usage,
             "latency_ms": latency,
             "answer": answer,
+            "steps": steps,
         },
     )
