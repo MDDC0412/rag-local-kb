@@ -24,7 +24,9 @@ async def _seed_kb(session) -> KnowledgeBase:
     row = (await session.execute(select(KnowledgeBase).limit(1))).scalar_one_or_none()
     if row is not None:
         return row
-    kb = KnowledgeBase(name=DEFAULT_KB_NAME, description="默认知识库", chunk_strategy_default="recursive")
+    kb = KnowledgeBase(
+        name=DEFAULT_KB_NAME, description="默认知识库", chunk_strategy_default="recursive"
+    )
     session.add(kb)
     await session.commit()
     await session.refresh(kb)
@@ -66,12 +68,30 @@ async def _seed_providers(session) -> None:
     """把 .env 里的 DEV_* 配置写入数据库（仅当该 kind 下还没有任何供应商）。"""
     settings = get_settings()
     seeds = [
-        ("llm", "openai", settings.dev_llm_base_url, settings.dev_llm_api_key, settings.dev_llm_model,
-         {"temperature": 0.3}),
-        ("embedding", "openai", settings.dev_embed_base_url, settings.dev_embed_api_key,
-         settings.dev_embed_model, {"batch_size": 32}),
-        ("rerank", "dashscope_rerank", settings.dev_rerank_base_url, settings.dev_rerank_api_key,
-         settings.dev_rerank_model, {}),
+        (
+            "llm",
+            "openai",
+            settings.dev_llm_base_url,
+            settings.dev_llm_api_key,
+            settings.dev_llm_model,
+            {"temperature": 0.3},
+        ),
+        (
+            "embedding",
+            "openai",
+            settings.dev_embed_base_url,
+            settings.dev_embed_api_key,
+            settings.dev_embed_model,
+            {"batch_size": 32},
+        ),
+        (
+            "rerank",
+            "dashscope_rerank",
+            settings.dev_rerank_base_url,
+            settings.dev_rerank_api_key,
+            settings.dev_rerank_model,
+            {},
+        ),
     ]
     display = {"llm": "默认对话模型", "embedding": "默认向量模型", "rerank": "默认重排模型"}
 
@@ -80,7 +100,9 @@ async def _seed_providers(session) -> None:
         if not (base_url and api_key and model):
             continue
         exists = (
-            await session.execute(select(func.count()).select_from(ProviderConfig).where(ProviderConfig.kind == kind))
+            await session.execute(
+                select(func.count()).select_from(ProviderConfig).where(ProviderConfig.kind == kind)
+            )
         ).scalar_one()
         if exists:
             continue
@@ -98,7 +120,9 @@ async def _seed_providers(session) -> None:
         session.add(row)
         await session.flush()
         created[kind] = row.id
-        logger.info("种子供应商 %s(%s) model=%s key=%s", row.name, kind, model, mask_secret(api_key))
+        logger.info(
+            "种子供应商 %s(%s) model=%s key=%s", row.name, kind, model, mask_secret(api_key)
+        )
 
     if created:
         await session.commit()

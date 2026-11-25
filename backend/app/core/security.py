@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -16,11 +17,9 @@ def _load_or_create_key(secret_path: Path) -> bytes:
     key = Fernet.generate_key()
     secret_path.parent.mkdir(parents=True, exist_ok=True)
     secret_path.write_bytes(key)
-    try:
+    # Windows 上 chmod 语义有限，失败不影响功能
+    with contextlib.suppress(OSError):
         os.chmod(secret_path, 0o600)
-    except OSError:
-        # Windows 上 chmod 语义有限，失败不影响功能
-        pass
     return key
 
 

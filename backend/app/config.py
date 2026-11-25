@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,13 +50,24 @@ class Settings(BaseSettings):
 
     @property
     def data_dir(self) -> Path:
-        """数据根目录（uploads / chroma / app.db / logs / .secret 都在其下）。"""
+        """数据根目录（uploads / chroma / app.db / logs / .secret 都在其下）。
+
+        相对路径一律相对**仓库根**解析，不相对进程 CWD：
+        否则从 backend/ 启动时 "../data" 会跑到项目外面去（踩过这个坑）。
+        """
         raw = self.app_data_dir.strip()
-        path = Path(raw) if raw else REPO_ROOT / "data"
-        if not path.is_absolute():
-            path = (REPO_ROOT / path).resolve()
+        if not raw:
+            path = REPO_ROOT / "data"
+        else:
+            candidate = Path(raw)
+            if candidate.is_absolute():
+                path = candidate
+            else:
+                # 允许 "data" 或 "./data" 这类写法，统一挂到仓库根下
+                normalized = Path(*[p for p in candidate.parts if p not in (".", "..")])
+                path = REPO_ROOT / normalized
         path.mkdir(parents=True, exist_ok=True)
-        return path
+        return path.resolve()
 
     @property
     def uploads_dir(self) -> Path:

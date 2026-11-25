@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from app.core.errors import PROVIDER_UNAVAILABLE, AppError
 from app.providers.base import ProviderSpec, embed_texts
@@ -64,7 +64,11 @@ class EmbeddingClient:
             except AppError as exc:
                 last_error = exc
                 logger.warning(
-                    "向量化失败（第 %s/%s 次，%s 条）：%s", attempt, self.max_retries, len(batch), exc.message
+                    "向量化失败（第 %s/%s 次，%s 条）：%s",
+                    attempt,
+                    self.max_retries,
+                    len(batch),
+                    exc.message,
                 )
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 ** (attempt - 1))

@@ -2,10 +2,10 @@
 
 协议枚举
 --------
-llm / embedding : ``openai``            —— OpenAI 兼容（/models, /embeddings, /chat/completions）
+llm / embedding : ``openai``            —— OpenAI 兼容（/models, /embeddings）
 rerank          : ``siliconflow_rerank`` —— POST {base}/rerank
                   ``cohere_rerank``      —— POST {base}/v1/rerank
-                  ``dashscope_rerank``   —— POST {origin}/api/v1/services/rerank/text-rerank/text-rerank
+                  ``dashscope_rerank``   —— POST {origin}/api/v1/services/rerank/...
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ async def _request(
             resp = await client.request(method, url, headers=_auth_headers(spec), json=json)
             resp.raise_for_status()
             return resp.json()
-    except Exception as exc:  # noqa: BLE001 - 统一转译
+    except Exception as exc:
         raise _human_error(exc, spec) from exc
 
 
@@ -171,7 +171,9 @@ async def probe_embedding(spec: ProviderSpec) -> dict[str, Any]:
     }
 
 
-async def embed_texts(spec: ProviderSpec, texts: list[str], *, timeout: float = 120.0) -> list[list[float]]:
+async def embed_texts(
+    spec: ProviderSpec, texts: list[str], *, timeout: float = 120.0
+) -> list[list[float]]:
     """批量向量化（单次请求，调用方负责分批与重试）。"""
     if not texts:
         return []
@@ -205,7 +207,9 @@ def _rerank_url(spec: ProviderSpec) -> str:
     return f"{spec.base}/rerank"
 
 
-def _rerank_body(spec: ProviderSpec, query: str, documents: list[str], top_n: int) -> dict[str, Any]:
+def _rerank_body(
+    spec: ProviderSpec, query: str, documents: list[str], top_n: int
+) -> dict[str, Any]:
     if spec.protocol == "dashscope_rerank":
         return {
             "model": spec.model,
@@ -230,12 +234,18 @@ def _parse_rerank(payload: dict[str, Any], protocol: str) -> list[dict[str, Any]
     elif protocol == "cohere_rerank":
         for item in payload.get("results", []):
             items.append(
-                {"index": int(item.get("index", 0)), "score": float(item.get("relevance_score", 0.0))}
+                {
+                    "index": int(item.get("index", 0)),
+                    "score": float(item.get("relevance_score", 0.0)),
+                }
             )
     else:
         for item in payload.get("results", []):
             items.append(
-                {"index": int(item.get("index", 0)), "score": float(item.get("relevance_score", 0.0))}
+                {
+                    "index": int(item.get("index", 0)),
+                    "score": float(item.get("relevance_score", 0.0)),
+                }
             )
 
     items.sort(key=lambda it: it["score"], reverse=True)
@@ -258,7 +268,8 @@ async def probe_rerank(spec: ProviderSpec) -> dict[str, Any]:
     if not results:
         raise AppError(
             PROVIDER_UNAVAILABLE,
-            f"{spec.name} 未返回重排结果，请确认 protocol 与 base_url 是否匹配（当前 {spec.protocol}）",
+            f"{spec.name} 未返回重排结果，请确认 protocol 与 base_url 是否匹配"
+            f"（当前 {spec.protocol}）",
         )
     expected_top = 0 if results[0]["index"] == 0 else 1
     return {

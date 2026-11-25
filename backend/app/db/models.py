@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     Boolean,
@@ -20,7 +20,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 def utcnow() -> datetime:
     """带时区的当前 UTC 时间。"""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -81,7 +81,9 @@ class Document(Base, TimestampMixin):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    kb_id: Mapped[int] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    kb_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True
+    )
     filename: Mapped[str] = mapped_column(String(255))
     stored_path: Mapped[str] = mapped_column(String(512))
     file_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -113,7 +115,9 @@ class DocumentPage(Base):
     __table_args__ = (UniqueConstraint("document_id", "page_no", name="uq_page_doc_no"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
     page_no: Mapped[int] = mapped_column(Integer, default=0)
     text: Mapped[str] = mapped_column(Text, default="")
     char_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -127,7 +131,9 @@ class Chunk(Base):
     __tablename__ = "chunks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
     kb_id: Mapped[int] = mapped_column(Integer, index=True)
     seq: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text, default="")
@@ -204,7 +210,9 @@ class Conversation(Base, TimestampMixin):
     __tablename__ = "conversations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    kb_id: Mapped[int] = mapped_column(ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True)
+    kb_id: Mapped[int] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True
+    )
     title: Mapped[str] = mapped_column(String(128), default="新会话")
     system_prompt_id: Mapped[int | None] = mapped_column(
         ForeignKey("prompt_templates.id", ondelete="SET NULL"), nullable=True

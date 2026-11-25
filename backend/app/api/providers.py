@@ -137,9 +137,7 @@ async def update_provider(
 
 
 @router.delete("/{provider_id}", status_code=204)
-async def delete_provider(
-    provider_id: int, session: AsyncSession = Depends(get_session)
-) -> None:
+async def delete_provider(provider_id: int, session: AsyncSession = Depends(get_session)) -> None:
     """删除供应商。"""
     row = await get_provider(session, provider_id)
     await session.delete(row)
@@ -181,9 +179,7 @@ async def test_provider_draft(payload: ProviderTestIn) -> ProviderTestOut:
 
 
 @router.get("/{provider_id}/models", response_model=list[str])
-async def list_models(
-    provider_id: int, session: AsyncSession = Depends(get_session)
-) -> list[str]:
+async def list_models(provider_id: int, session: AsyncSession = Depends(get_session)) -> list[str]:
     """拉取该供应商可用模型列表。"""
     row = await get_provider(session, provider_id)
     spec = ProviderSpec(
