@@ -18,7 +18,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -496,6 +496,29 @@ async def index_document(
 # --------------------------------------------------------------------------- #
 # 查询与删除
 # --------------------------------------------------------------------------- #
+async def reset_document_index(session: AsyncSession, document_id: int) -> int:
+    """把文档打回「未入库」并清掉向量，返回受影响的分块数。
+
+    换向量模型后必须走这条：旧向量是另一个模型算的，和新向量不在一个空间里
+    比较，留着只会污染检索。清完再调 ``index_document`` 重建。
+    """
+    doc = await session.get(Document, document_id)
+    if doc is None:
+        raise AppError(NOT_FOUND, f"文档 #{document_id} 不存在", status_code=404)
+
+    result = await session.execute(
+        update(Chunk).where(Chunk.document_id == document_id).values(is_confirmed=0, vector_id="")
+    )
+    doc.status = "parsed"
+    doc.indexed_at = None
+    doc.error_msg = ""
+    await session.commit()
+
+    indexing.delete_document_vectors(document_id)
+    logger.info("文档 #%s 已重置索引，%s 块待重建", document_id, result.rowcount or 0)
+    return result.rowcount or 0
+
+
 async def list_documents(
     session: AsyncSession, kb_id: int, *, status: str | None = None
 ) -> list[Document]:

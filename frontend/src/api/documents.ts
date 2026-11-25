@@ -1,6 +1,7 @@
 /** 文档与分块相关接口。 */
 
 import { http } from './http'
+import type { JobEnqueued } from './jobs'
 
 export interface DocumentItem {
   id: number
@@ -193,15 +194,10 @@ export const docsApi = {
 
   mergeChunks: (chunkIds: number[]) => http.post<ChunkItem>('/chunks/merge', { chunk_ids: chunkIds }),
 
-  index: (id: number) =>
-    http.post<{ document_id: number; indexed_chunks: number; vectors: number; status: string }>(
-      `/documents/${id}/index`,
-    ),
+  // 入库/重建是异步的：立刻返回任务，进度靠 GET /jobs/{id} 轮询
+  index: (id: number) => http.post<JobEnqueued>(`/documents/${id}/index`),
 
-  reindex: (id: number) =>
-    http.post<{ document_id: number; indexed_chunks: number; vectors: number; status: string }>(
-      `/documents/${id}/reindex`,
-    ),
+  reindex: (id: number) => http.post<JobEnqueued>(`/documents/${id}/reindex`),
 
   remove: (id: number) => http.del<void>(`/documents/${id}`),
 

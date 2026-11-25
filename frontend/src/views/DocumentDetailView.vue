@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   STATUS_LABEL,
@@ -14,6 +14,7 @@ import {
   type StrategyMeta,
   type StrategySample,
 } from '@/api/documents'
+import { JOB_LABEL, isActive, jobsApi, type Job } from '@/api/jobs'
 import StrategySampleModal from '@/components/StrategySampleModal.vue'
 
 const route = useRoute()
@@ -31,6 +32,13 @@ const loading = ref(false)
 const busy = ref('')
 const error = ref('')
 const notice = ref('')
+/** 当前正在跟踪的后台任务（入库/重建），null 表示没有在跑。 */
+const activeJob = ref<Job | null>(null)
+let pollTimer: number | null = null
+
+onUnmounted(() => {
+  if (pollTimer !== null) window.clearTimeout(pollTimer)
+})
 
 const options = reactive({
   strategy: 'recursive' as ChunkStrategy,
@@ -200,13 +208,15 @@ async function mergeSelected() {
 async function indexNow() {
   busy.value = 'index'
   error.value = ''
+  notice.value = ''
   try {
     const result = await docsApi.index(docId)
-    notice.value = `已入库 ${result.indexed_chunks} 块，向量库共 ${result.vectors} 条`
-    await load()
+    if (result.deduplicated) {
+      notice.value = '这篇文档已经在入库队列里了，进度见下方。'
+    }
+    watchJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
-  } finally {
     busy.value = ''
   }
 }
@@ -214,13 +224,59 @@ async function indexNow() {
 async function reindex() {
   if (!confirm('重建索引会用当前向量模型重新计算整篇文档，可能产生费用。继续？')) return
   busy.value = 'index'
+  error.value = ''
+  notice.value = ''
   try {
     const result = await docsApi.reindex(docId)
-    notice.value = `已重建 ${result.indexed_chunks} 块`
-    await load()
+    if (result.deduplicated) notice.value = '重建任务已在队列中。'
+    watchJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
-  } finally {
+    busy.value = ''
+  }
+}
+
+/** 轮询任务进度，直到结束；结束后刷新页面数据。 */
+async function watchJob(job: Job) {
+  activeJob.value = job
+  if (pollTimer !== null) window.clearTimeout(pollTimer)
+
+  const tick = async () => {
+    try {
+      const latest = await jobsApi.get(job.id)
+      activeJob.value = latest
+      if (isActive(latest)) {
+        pollTimer = window.setTimeout(tick, 700)
+        return
+      }
+      pollTimer = null
+      busy.value = ''
+      if (latest.status === 'failed') {
+        error.value = latest.error_msg || '任务失败，可以点「重试」再试一次'
+      }
+      // 成功不额外弹提示：上面那条绿色进度条已经说明了结果，重复报两遍很吵
+      await load()
+    } catch (e) {
+      pollTimer = null
+      busy.value = ''
+      error.value = (e as Error).message
+    }
+  }
+
+  await tick()
+}
+
+/** 手动重试失败的任务。 */
+async function retryJob() {
+  if (!activeJob.value) return
+  busy.value = 'index'
+  error.value = ''
+  try {
+    const result = await jobsApi.retry(activeJob.value.id)
+    notice.value = '已重新排入队列。'
+    watchJob(result.job)
+  } catch (e) {
+    error.value = (e as Error).message
     busy.value = ''
   }
 }
@@ -274,6 +330,42 @@ onMounted(load)
 
     <p v-if="error" class="notice bad">{{ error }}</p>
     <p v-if="notice" class="notice warn">{{ notice }}</p>
+
+    <!-- 后台任务进度：入库/重建都是异步的 -->
+    <section v-if="activeJob" class="jobbar card">
+      <div class="jobbar-head">
+        <span class="jobbar-label">
+          {{ JOB_LABEL[activeJob.type] ?? activeJob.type }}
+          <span v-if="activeJob.status === 'pending'" class="jobbar-state">排队中</span>
+          <span v-else-if="activeJob.status === 'running'" class="jobbar-state">
+            {{ activeJob.progress }}%
+          </span>
+          <span v-else-if="activeJob.status === 'done'" class="jobbar-state ok">已完成</span>
+          <span v-else class="jobbar-state bad">失败</span>
+        </span>
+        <button
+          v-if="activeJob.status === 'failed'"
+          class="btn btn-sm btn-quiet"
+          :disabled="!!busy"
+          @click="retryJob"
+        >
+          重试
+        </button>
+        <button v-else-if="!isActive(activeJob)" class="btn btn-sm btn-quiet" @click="activeJob = null">
+          知道了
+        </button>
+      </div>
+      <div class="jobbar-track">
+        <div
+          class="jobbar-fill"
+          :class="{ ok: activeJob.status === 'done', bad: activeJob.status === 'failed' }"
+          :style="{ width: `${activeJob.status === 'pending' ? 3 : activeJob.progress}%` }"
+        />
+      </div>
+      <p v-if="activeJob.status === 'failed' && activeJob.error_msg" class="jobbar-msg">
+        {{ activeJob.error_msg }}
+      </p>
+    </section>
 
     <!-- 切分参数 -->
     <section class="toolbar card">
@@ -474,6 +566,63 @@ onMounted(load)
 .notice.bad {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+/* 后台任务进度条 */
+.jobbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+}
+.jobbar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.jobbar-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: 12.5px;
+  color: var(--text-0);
+}
+.jobbar-state {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+.jobbar-state.ok {
+  color: var(--ok);
+}
+.jobbar-state.bad {
+  color: var(--danger);
+}
+.jobbar-head .btn {
+  margin-left: auto;
+}
+.jobbar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.jobbar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+.jobbar-fill.ok {
+  background: var(--ok);
+}
+.jobbar-fill.bad {
+  background: var(--danger);
+}
+.jobbar-msg {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+  line-height: 1.55;
 }
 
 /* 工具条 */

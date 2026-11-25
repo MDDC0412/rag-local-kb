@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,14 +19,16 @@ from app.schemas.document import (
     ChunkUpdateRequest,
     DocumentDetail,
     DocumentOut,
-    IndexResponse,
     ParseRequest,
     ParseResponse,
     StatsOut,
     UploadResult,
 )
+from app.schemas.job import JobEnqueued
 from app.services import documents as doc_service
+from app.services import jobs as job_service
 from app.services.llm_parse import chunk_with_llm
+from app.workers.queue import get_queue
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -354,48 +356,49 @@ async def merge_chunks(
 
 
 # --------------------------------------------------------------------------- #
-# 入库
+# 入库（异步：排队后立刻返回任务，前端轮询 /api/jobs/{id}）
 # --------------------------------------------------------------------------- #
-@router.post("/documents/{document_id}/index", response_model=IndexResponse)
+@router.post("/documents/{document_id}/index", response_model=JobEnqueued)
 async def index_document(
-    document_id: int, session: AsyncSession = Depends(get_session)
-) -> IndexResponse:
-    """确认入库：向量化未确认的分块并写入 Chroma。"""
-    from app.services import indexing
+    document_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> JobEnqueued:
+    """确认入库：把未确认的分块排进队列向量化，立刻返回任务。
 
-    indexed = await doc_service.index_document(session, document_id)
+    不在这里等 embedding 跑完：几十块文档要几十秒，接口会超时，
+    而且用户看不到任何进度。真正的活在 ``workers/handlers.py``。
+    """
     doc = await doc_service.get_document(session, document_id)
-    return IndexResponse(
-        document_id=document_id,
-        indexed_chunks=indexed,
-        vectors=indexing.count_vectors(),
-        status=doc.status,
-    )
-
-
-@router.post("/documents/{document_id}/reindex", response_model=IndexResponse)
-async def reindex_document(
-    document_id: int, session: AsyncSession = Depends(get_session)
-) -> IndexResponse:
-    """整篇重新向量化（换向量模型后必须走这条）。"""
-    from app.services import indexing
-
-    doc = await doc_service.get_document(session, document_id)
-    # 把已确认的分块打回未确认，再走一次入库
     chunks = await doc_service.list_chunks(session, document_id)
-    for chunk in chunks:
-        chunk.is_confirmed = 0
-        chunk.vector_id = ""
-    await session.commit()
-    indexing.delete_document_vectors(document_id)
+    pending = [chunk for chunk in chunks if not chunk.is_confirmed]
+    if not pending:
+        raise AppError(
+            "NO_CHUNKS_TO_INDEX",
+            "没有待入库的分块，请先生成分块预览并保存",
+            status_code=400,
+        )
 
-    indexed = await doc_service.index_document(session, document_id)
-    return IndexResponse(
-        document_id=document_id,
-        indexed_chunks=indexed,
-        vectors=indexing.count_vectors(),
-        status=doc.status,
-    )
+    # 用户连点两次不该产生两份活：同文档已有 pending/running 的任务就直接复用
+    job, created = await job_service.create_job(session, "index", document_id)
+    if created:
+        await get_queue(request.app).enqueue(job.id)
+    logger.info("文档 #%s 入库任务 #%s（%s）", doc.id, job.id, "新建" if created else "复用")
+    return JobEnqueued(job=job, deduplicated=not created)
+
+
+@router.post("/documents/{document_id}/reindex", response_model=JobEnqueued)
+async def reindex_document(
+    document_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> JobEnqueued:
+    """整篇重建向量（换向量模型后必须走这条）：排队执行。"""
+    await doc_service.get_document(session, document_id)
+    job, created = await job_service.create_job(session, "reindex", document_id)
+    if created:
+        await get_queue(request.app).enqueue(job.id)
+    return JobEnqueued(job=job, deduplicated=not created)
 
 
 @router.get("/kbs/{kb_id}/stats", response_model=StatsOut)

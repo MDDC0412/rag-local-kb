@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.api import chat as chat_api
 from app.api import chunk_samples as chunk_samples_api
 from app.api import documents as documents_api
+from app.api import jobs as jobs_api
 from app.api import providers as providers_api
 from app.config import get_settings
 from app.core.errors import INTERNAL_ERROR, VALIDATION_FAILED, AppError
@@ -20,6 +21,7 @@ from app.core.logging import setup_logging
 from app.core.net import install_proxy_env
 from app.db.seed import seed_defaults
 from app.db.session import init_db
+from app.workers.queue import JobQueue
 
 settings = get_settings()
 setup_logging(settings.app_log_level, settings.logs_dir)
@@ -28,14 +30,22 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动：建表 + 种子数据；关闭：无需清理。"""
+    """启动：建表 + 种子数据 + 后台任务队列；关闭：停 worker。"""
     logger.info("启动中… data_dir=%s", settings.data_dir)
     install_proxy_env()
     await init_db()
     await seed_defaults()
+
+    queue = JobQueue()
+    app.state.job_queue = queue
+    await queue.start()
+
     logger.info("就绪：http://%s:%s/docs", settings.app_host, settings.app_port)
-    yield
-    logger.info("已停止")
+    try:
+        yield
+    finally:
+        await queue.stop()
+        logger.info("已停止")
 
 
 app = FastAPI(
@@ -111,3 +121,4 @@ app.include_router(providers_api.router)
 app.include_router(documents_api.router)
 app.include_router(chunk_samples_api.router)
 app.include_router(chat_api.router)
+app.include_router(jobs_api.router)

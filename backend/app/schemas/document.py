@@ -111,15 +111,6 @@ class ChunkMergeRequest(BaseModel):
     chunk_ids: list[int] = Field(min_length=2)
 
 
-class IndexResponse(BaseModel):
-    """入库结果。"""
-
-    document_id: int
-    indexed_chunks: int
-    vectors: int
-    status: str
-
-
 class DocumentDetail(BaseModel):
     """文档详情 + 分块。"""
 
