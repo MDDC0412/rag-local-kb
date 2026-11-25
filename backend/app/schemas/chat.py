@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.timeutil import UTCDateTime
 
 RewriteRecipe = Literal["off", "rewrite", "hyde"]
 
@@ -44,8 +45,8 @@ class ConversationOut(BaseModel):
     embedding_provider_id: int | None = None
     rerank_provider_id: int | None = None
     use_rerank: bool = True
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
 
 
 class ModelOption(BaseModel):
@@ -87,7 +88,7 @@ class MessageOut(BaseModel):
     retrieval_json: str
     token_usage: int
     latency_ms: int
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class ConversationDetail(BaseModel):

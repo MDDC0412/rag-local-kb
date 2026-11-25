@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.timeutil import UTCDateTime
 
 ProviderKind = Literal["llm", "embedding", "rerank"]
 Protocol = Literal["openai", "siliconflow_rerank", "cohere_rerank", "dashscope_rerank"]
@@ -59,7 +60,7 @@ class ProviderOut(BaseModel):
     enabled: bool
     has_api_key: bool
     api_key_masked: str
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class ProviderTestIn(BaseModel):

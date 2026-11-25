@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict
+
+from app.core.timeutil import UTCDateTime, UTCDateTimeOptional
 
 JobStatus = str  # pending / running / done / failed
 
@@ -21,9 +21,9 @@ class JobOut(BaseModel):
     progress: int
     attempts: int
     error_msg: str
-    started_at: datetime | None
-    finished_at: datetime | None
-    created_at: datetime
+    started_at: UTCDateTimeOptional
+    finished_at: UTCDateTimeOptional
+    created_at: UTCDateTime
 
 
 class JobEnqueued(BaseModel):

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.core.timeutil import UTCDateTime, UTCDateTimeOptional
 
 ChunkStrategy = Literal[
     "fixed",
@@ -40,8 +41,8 @@ class DocumentOut(BaseModel):
     summary: str = ""
     category: str | None = None
     tags: list[str] = Field(default_factory=list)
-    created_at: datetime
-    indexed_at: datetime | None
+    created_at: UTCDateTime
+    indexed_at: UTCDateTimeOptional
 
 
 class UploadResult(BaseModel):
