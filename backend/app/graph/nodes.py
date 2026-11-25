@@ -240,6 +240,7 @@ async def fuse_node(state: RagState, *, session) -> RagState:
     started = time.perf_counter()
     options: RetrievalOptions = state.get("options") or RetrievalOptions()
     factor = 2 if state.get("expanded") else 1
+    query = state.get("rewritten") or state["question"]
 
     hits, debug = await fuse(
         session,
@@ -247,6 +248,7 @@ async def fuse_node(state: RagState, *, session) -> RagState:
         bm25_hits=state.get("bm25_hits") or [],
         options=options,
         factor=factor,
+        query=query,
     )
     elapsed = int((time.perf_counter() - started) * 1000)
     steps = _append_step(
@@ -278,11 +280,19 @@ async def rerank_node(
         hits = sorted(state.get("hits") or [], key=lambda hit: hit.score_fused, reverse=True)[
             : options.rerank_top_n
         ]
+        # 没走精排时 top_score 用融合分，别让「检索详情」显示一个没意义的 0
+        if debug is not None:
+            debug.top_score = round(hits[0].score_fused, 6) if hits else 0.0
         steps = _append_step(
             state,
             step("rerank", "精排", "skipped", "未配置重排模型或已关闭，按融合分排序"),
         )
-        return {"hits": hits, "steps": steps, "last_step": steps[-1] if steps else None}
+        return {
+            "hits": hits,
+            "debug": debug,
+            "steps": steps,
+            "last_step": steps[-1] if steps else None,
+        }
 
     hits, debug = await apply_rerank(
         state.get("hits") or [],
@@ -292,6 +302,9 @@ async def rerank_node(
         debug=debug,  # type: ignore[arg-type]
         factor=factor,
     )
+    # top_score 只在 retrieve() 里被赋值过，而图不经过它 —— 不在这里补就是 0.0
+    if debug is not None:
+        debug.top_score = round(hits[0].score, 4) if hits else 0.0
     elapsed = int((time.perf_counter() - started) * 1000)
     status = "done" if debug and debug.used_rerank else "failed"
     detail = (

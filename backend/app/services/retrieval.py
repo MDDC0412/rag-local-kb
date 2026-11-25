@@ -270,8 +270,14 @@ async def fuse(
     bm25_hits: list[tuple[int, float]],
     options: RetrievalOptions,
     factor: int = 1,
+    query: str = "",
 ) -> tuple[list[Hit], RetrievalDebug]:
-    """融合阶段：RRF 合并两路排名，并补齐分块详情。"""
+    """融合阶段：RRF 合并两路排名，并补齐分块详情。
+
+    ``query`` 只为「检索详情」展示用（让用户看到到底拿什么问题去检索的）。
+    图里走的是分步节点、不经过 :func:`retrieve`，所以这里必须自己能拿到 query，
+    否则存进 ``retrieval_json.query`` 的永远是空串。
+    """
     vector_ids = [chunk_id for chunk_id, _ in vector_hits]
     bm25_ids = [chunk_id for chunk_id, _ in bm25_hits]
     vector_scores = dict(vector_hits)
@@ -311,7 +317,7 @@ async def fuse(
         )
 
     debug = RetrievalDebug(
-        query="",
+        query=query,
         vector=[
             {
                 "chunk_id": chunk_id,
@@ -410,9 +416,13 @@ async def retrieve(
         session, kb_id=kb_id, query=query, query_vector=query_vector, options=opts, factor=factor
     )
     hits, debug = await fuse(
-        session, vector_hits=vector_hits, bm25_hits=bm25_hits, options=opts, factor=factor
+        session,
+        vector_hits=vector_hits,
+        bm25_hits=bm25_hits,
+        options=opts,
+        factor=factor,
+        query=query,
     )
-    debug.query = query
     debug.expanded = expand
     hits, debug = await apply_rerank(
         hits,

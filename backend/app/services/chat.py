@@ -308,16 +308,14 @@ async def _stream_impl(
     # 6) 流式生成
     system_prompt = await _system_prompt(session)
     messages = build_messages(final_state, system_prompt=system_prompt)
-    yield _sse(
-        "step",
-        {
-            "name": "generate",
-            "label": "模型生成",
-            "status": "running",
-            "detail": f"已提交 {len(messages)} 条消息",
-            "elapsed_ms": 0,
-        },
-    )
+    generate_step = {
+        "name": "generate",
+        "label": "模型生成",
+        "status": "running",
+        "detail": f"已提交 {len(messages)} 条消息",
+        "elapsed_ms": 0,
+    }
+    yield _sse("step", generate_step)
 
     stream_model = build_chat_model(llm_spec, streaming=True)
     answer_parts: list[str] = []
@@ -345,16 +343,17 @@ async def _stream_impl(
 
     answer = "".join(answer_parts)
     gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
-    yield _sse(
-        "step",
-        {
-            "name": "generate",
-            "label": "模型生成",
-            "status": "done",
-            "detail": f"首字 {first_token_ms}ms · 共 {len(answer)} 字",
-            "elapsed_ms": gen_elapsed,
-        },
-    )
+    generate_step = {
+        "name": "generate",
+        "label": "模型生成",
+        "status": "done",
+        "detail": f"首字 {first_token_ms}ms · 共 {len(answer)} 字",
+        "elapsed_ms": gen_elapsed,
+    }
+    # 这一步在图之外（要推 SSE），也必须并入 all_steps，
+    # 否则重新打开历史会话时「模型生成」永远是个灰点 —— 它压根没存进库
+    all_steps.append(generate_step)
+    yield _sse("step", generate_step)
 
     citations = extract_citations(answer, hits)
     latency = int((time.perf_counter() - started) * 1000)

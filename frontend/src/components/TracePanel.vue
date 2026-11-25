@@ -268,6 +268,20 @@ const dotClass = (name: string) => {
   color: var(--text-2);
 }
 
+/* 状态点。
+   ⚠️ 这几个 class 必须在这里定义：本组件是 scoped 样式，
+   全局 theme.css 里的 .dot-ok / .dot-idle / .dot-bad 挂不到
+   这里的 .trace-dot 上（之前只写了 dot-warn / dot-skip，
+   结果每步跑完都不变色，用户看到的就是「跑完了也没变绿」）。 */
+.dot-ok {
+  background: var(--ok);
+}
+.dot-idle {
+  background: var(--text-2);
+}
+.dot-bad {
+  background: var(--danger);
+}
 .dot-warn {
   background: var(--warn);
   animation: pulse 1s ease-in-out infinite;
