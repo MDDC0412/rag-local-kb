@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api import documents as documents_api
 from app.api import providers as providers_api
 from app.config import get_settings
 from app.core.errors import INTERNAL_ERROR, VALIDATION_FAILED, AppError
@@ -105,3 +106,4 @@ async def health() -> dict[str, object]:
 
 
 app.include_router(providers_api.router)
+app.include_router(documents_api.router)
