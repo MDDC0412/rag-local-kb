@@ -12,7 +12,9 @@ import {
   type PageItem,
   type PreviewResult,
   type StrategyMeta,
+  type StrategySample,
 } from '@/api/documents'
+import StrategySampleModal from '@/components/StrategySampleModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +24,9 @@ const detail = ref<DocumentDetail | null>(null)
 const pages = ref<PageItem[]>([])
 const chunks = ref<ChunkItem[]>([])
 const strategies = ref<StrategyMeta[]>([])
+const sampleStrategies = ref<Set<string>>(new Set())
+const sampleOpen = ref(false)
+const sampleStrategy = ref('')
 const loading = ref(false)
 const busy = ref('')
 const error = ref('')
@@ -42,6 +47,14 @@ const currentStrategy = computed(() =>
 const needsApi = computed(() => currentStrategy.value?.needs_api ?? false)
 const showThreshold = computed(() => options.strategy === 'semantic')
 
+/** 当前策略是否配了样例（配了才显示「看样例」按钮）。 */
+const hasSample = computed(() => sampleStrategies.value.has(options.strategy))
+
+function openSample() {
+  sampleStrategy.value = options.strategy
+  sampleOpen.value = true
+}
+
 const previewStats = ref<{ count: number; total: number; avg: number; strategy: string } | null>(null)
 
 // 编辑态
@@ -57,15 +70,17 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [d, p, s] = await Promise.all([
+    const [d, p, s, sm] = await Promise.all([
       docsApi.detail(docId),
       docsApi.pages(docId).catch(() => null),
       docsApi.strategies().catch(() => ({ items: [] as StrategyMeta[] })),
+      docsApi.sampleIndex().catch(() => ({ items: [] as StrategySample[] })),
     ])
     detail.value = d
     chunks.value = d.chunks
     pages.value = p?.pages ?? []
     strategies.value = s.items
+    sampleStrategies.value = new Set(sm.items.map((item) => item.strategy))
     previewStats.value = {
       count: d.chunks.length,
       total: d.chunks.reduce((sum, c) => sum + c.token_count, 0),
@@ -270,6 +285,14 @@ onMounted(load)
           </option>
         </select>
       </div>
+      <button
+        v-if="hasSample"
+        class="btn btn-sm btn-quiet sample-btn"
+        title="看看这种策略适合什么样的文档"
+        @click="openSample"
+      >
+        看样例
+      </button>
       <div class="tool">
         <label>块大小 <span class="num">{{ options.chunk_size }}</span> token</label>
         <input v-model.number="options.chunk_size" type="range" min="128" max="1024" step="32" />
@@ -383,6 +406,15 @@ onMounted(load)
       </div>
     </section>
   </div>
+
+  <StrategySampleModal
+    v-if="sampleOpen"
+    :strategy="sampleStrategy"
+    :label="currentStrategy?.label ?? ''"
+    :chunk-size="options.chunk_size"
+    :overlap="options.overlap"
+    @close="sampleOpen = false"
+  />
 </template>
 
 <style scoped>
@@ -473,6 +505,11 @@ input[type="range"] {
   accent-color: var(--accent);
   height: 4px;
 }
+.sample-btn {
+  align-self: flex-end;
+  margin-bottom: 1px;
+}
+
 .strategy-hint {
   margin: 0;
   display: flex;

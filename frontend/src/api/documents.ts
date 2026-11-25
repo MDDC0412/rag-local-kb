@@ -117,8 +117,40 @@ export interface ChunkOptions {
   save?: boolean
 }
 
+export interface StrategySample {
+  strategy: string
+  title: string
+  why: string
+  traits: string[]
+  char_count: number
+}
+
+export interface StrategySampleDetail extends StrategySample {
+  document: string
+  chunk_size: number
+  overlap: number
+  chunks: Array<{
+    seq: number
+    content: string
+    token_count: number
+    page_no: number
+    section_path: string
+  }>
+  count: number
+  avg_tokens: number
+  warnings?: string[]
+  note?: string
+}
+
 export const docsApi = {
   strategies: () => http.get<{ items: StrategyMeta[] }>('/chunk-strategies'),
+
+  sampleIndex: () => http.get<{ items: StrategySample[] }>('/chunk-samples'),
+
+  sample: (strategy: string, chunkSize = 320, overlap = 32) =>
+    http.get<StrategySampleDetail>(
+      `/chunk-samples/${strategy}?chunk_size=${chunkSize}&overlap=${overlap}`,
+    ),
 
   stats: (kbId = 1) => http.get<KbStats>(`/kbs/${kbId}/stats`),
 

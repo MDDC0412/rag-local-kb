@@ -134,9 +134,10 @@ def test_parent_child_fills_parent_content() -> None:
     for chunk in result.chunks:
         assert chunk.parent_content, f"块 {chunk.seq} 没有父块"
         # 父块必须包含子块内容
-        assert chunk.content.strip() in chunk.parent_content or chunk.content[
-            :20
-        ] in chunk.parent_content
+        assert (
+            chunk.content.strip() in chunk.parent_content
+            or chunk.content[:20] in chunk.parent_content
+        )
 
 
 def test_parent_child_parent_is_whole_page() -> None:
@@ -155,7 +156,7 @@ def test_sentence_splits_on_chinese_period() -> None:
 
 def test_aggregate_merges_until_target() -> None:
     """聚合：把小句子拼到目标大小，且不产生空块。"""
-    units = ["这是第{}句话，长度适中。".format(i) for i in range(20)]
+    units = [f"这是第{i}句话，长度适中。" for i in range(20)]
     blocks = _aggregate(units, target_tokens=60)
     assert len(blocks) > 1
     assert all(block.strip() for block in blocks)
