@@ -7,7 +7,16 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ChunkStrategy = Literal["fixed", "recursive"]
+ChunkStrategy = Literal[
+    "fixed",
+    "recursive",
+    "sentence",
+    "paragraph",
+    "markdown",
+    "semantic",
+    "llm",
+    "parent_child",
+]
 
 
 class DocumentOut(BaseModel):
@@ -55,11 +64,12 @@ class ParseResponse(BaseModel):
 
 
 class ChunkPreviewRequest(BaseModel):
-    """分块预览参数。"""
+    """分块预览参数。strategy 决定用哪种边界依据。"""
 
     strategy: ChunkStrategy = "recursive"
     chunk_size: int = Field(default=512, ge=64, le=4096)
     overlap: int = Field(default=64, ge=0, le=1024)
+    semantic_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     save: bool = True
 
 

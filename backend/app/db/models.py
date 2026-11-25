@@ -141,6 +141,8 @@ class Chunk(Base):
     char_count: Mapped[int] = mapped_column(Integer, default=0)
     page_no: Mapped[int] = mapped_column(Integer, default=0)
     section_path: Mapped[str] = mapped_column(String(512), default="")
+    # parent_child 策略用：命中子块后可回填这段更完整的上下文
+    parent_content: Mapped[str] = mapped_column(Text, default="")
     vector_id: Mapped[str] = mapped_column(String(64), default="", index=True)
     is_confirmed: Mapped[int] = mapped_column(Integer, default=0, index=True)
     meta_json: Mapped[str] = mapped_column(Text, default="{}")

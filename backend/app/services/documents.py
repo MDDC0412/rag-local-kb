@@ -12,6 +12,7 @@ uploaded → parsing → parsed →（预览分块，is_confirmed=0）
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import uuid
@@ -29,6 +30,7 @@ from app.core.errors import (
     AppError,
 )
 from app.db.models import Chunk, Document, DocumentPage, KnowledgeBase, ProviderConfig
+from app.providers.embed import EmbeddingClient
 from app.providers.registry import to_spec
 from app.services import indexing
 from app.services.chunking import (
@@ -229,15 +231,63 @@ async def build_preview(
     return split_local(pages, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
 
 
+async def build_semantic_preview(
+    session: AsyncSession,
+    document_id: int,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = 0,
+    threshold: float = 0.55,
+) -> ChunkResult:
+    """语义切分：需要真实调用向量模型。
+
+    与本地策略不同，这个会产生 API 费用与延迟，
+    所以刻意单独成一个函数，让调用点一眼能看出"这条路径要花钱"。
+    """
+    from app.services.chunking import split_semantic
+
+    doc = await session.get(Document, document_id)
+    if doc is None:
+        raise AppError(NOT_FOUND, f"文档 #{document_id} 不存在", status_code=404)
+    pages = await load_pages(session, document_id)
+    spec = await resolve_embedding_spec(session, doc.kb_id)
+    client = EmbeddingClient(spec)
+
+    return await split_semantic(
+        pages,
+        embed_fn=client.embed,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        threshold=threshold,
+    )
+
+
 async def save_drafts(session: AsyncSession, document_id: int, drafts: list[ChunkDraft]) -> int:
-    """把预览结果写入 chunks（is_confirmed=0），覆盖同文档未确认的旧分块。"""
+    """把预览结果写入 chunks（is_confirmed=0）。
+
+    重新切分时必须**整体替换**该文档的分块，包括已入库的那些：
+    否则旧的「已入库 #1」会和新的「未入库 #1」并存，界面上出现两份，
+    检索时还会命中已被替换掉的旧内容。內容变了索引就得重建，
+    所以这里顺带清掉该文档的旧向量，并把状态退回 parsed。
+    """
     doc = await session.get(Document, document_id)
     if doc is None:
         raise AppError(NOT_FOUND, f"文档 #{document_id} 不存在", status_code=404)
 
-    await session.execute(
-        delete(Chunk).where(Chunk.document_id == document_id, Chunk.is_confirmed == 0)
-    )
+    had_confirmed = (
+        await session.execute(
+            select(func.count())
+            .select_from(Chunk)
+            .where(Chunk.document_id == document_id, Chunk.is_confirmed == 1)
+        )
+    ).scalar_one()
+    if had_confirmed:
+        with contextlib.suppress(Exception):
+            indexing.delete_document_vectors(document_id)
+        doc.status = "parsed"
+        doc.indexed_at = None
+
+    await session.execute(delete(Chunk).where(Chunk.document_id == document_id))
     for index, draft in enumerate(drafts):
         session.add(
             Chunk(
@@ -249,6 +299,7 @@ async def save_drafts(session: AsyncSession, document_id: int, drafts: list[Chun
                 char_count=len(draft.content),
                 page_no=draft.page_no,
                 section_path=draft.section_path,
+                parent_content=draft.parent_content,
                 is_confirmed=0,
             )
         )

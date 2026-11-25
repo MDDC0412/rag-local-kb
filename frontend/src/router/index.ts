@@ -16,8 +16,14 @@ const routes = [
   {
     path: '/documents',
     name: 'documents',
-    component: () => import('@/views/PlaceholderView.vue'),
-    meta: { title: '文档库', index: '03', milestone: 'M1' },
+    component: () => import('@/views/DocumentsView.vue'),
+    meta: { title: '文档库' },
+  },
+  {
+    path: '/documents/:id',
+    name: 'document-detail',
+    component: () => import('@/views/DocumentDetailView.vue'),
+    meta: { title: '分块预览' },
   },
   {
     path: '/chat',

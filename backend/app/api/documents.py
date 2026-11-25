@@ -26,6 +26,7 @@ from app.schemas.document import (
     UploadResult,
 )
 from app.services import documents as doc_service
+from app.services.llm_parse import chunk_with_llm
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -187,14 +188,34 @@ async def preview_chunks(
     payload: ChunkPreviewRequest,
     session: AsyncSession = Depends(get_session),
 ) -> ChunkPreviewResponse:
-    """按参数切分并可选落库（is_confirmed=0）。"""
-    result = await doc_service.build_preview(
-        session,
-        document_id,
-        strategy=payload.strategy,
-        chunk_size=payload.chunk_size,
-        overlap=payload.overlap,
-    )
+    """按指定策略切分并可选落库（is_confirmed=0）。
+
+    strategy=semantic 会真的调用向量模型（每批 32 句一次请求），属于"要花钱"的策略；
+    strategy=llm 会调用对话模型，代价更高。两者失败都会自动回退递归切分。
+    """
+    if payload.strategy == "semantic":
+        result = await doc_service.build_semantic_preview(
+            session,
+            document_id,
+            chunk_size=payload.chunk_size,
+            overlap=payload.overlap,
+            threshold=payload.semantic_threshold,
+        )
+    elif payload.strategy == "llm":
+        result = await chunk_with_llm(
+            session,
+            document_id,
+            chunk_size=payload.chunk_size,
+            overlap=payload.overlap,
+        )
+    else:
+        result = await doc_service.build_preview(
+            session,
+            document_id,
+            strategy=payload.strategy,
+            chunk_size=payload.chunk_size,
+            overlap=payload.overlap,
+        )
 
     chunk_ids: list[int] = []
     if payload.save and result.chunks:
@@ -224,6 +245,29 @@ async def preview_chunks(
         avg_tokens=result.avg_tokens,
         warnings=result.warnings,
     )
+
+
+@router.get("/chunk-strategies")
+async def list_chunk_strategies() -> dict:
+    """列出所有分块策略及说明，前端用来渲染下拉项，避免前后端各写一份文案。"""
+    from app.services.chunking import (
+        API_STRATEGIES,
+        LOCAL_STRATEGIES,
+        STRATEGY_HINT,
+        STRATEGY_LABEL,
+    )
+
+    items = []
+    for name in (*LOCAL_STRATEGIES, *API_STRATEGIES):
+        items.append(
+            {
+                "value": name,
+                "label": STRATEGY_LABEL.get(name, name),
+                "hint": STRATEGY_HINT.get(name, ""),
+                "needs_api": name in API_STRATEGIES,
+            }
+        )
+    return {"items": items}
 
 
 @router.post("/documents/{document_id}/chunks/llm", response_model=ChunkPreviewResponse)
