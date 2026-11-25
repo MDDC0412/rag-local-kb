@@ -1,0 +1,35 @@
+# 运行时
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.4
+pydantic-settings==2.16.3
+python-multipart==0.0.34
+aiofiles==25.1.0
+httpx==0.28.1
+sqlalchemy[asyncio]==2.1.9
+greenlet==3.5.6
+aiosqlite==0.22.1
+
+# LangChain / LangGraph（锁死，勿升级）
+langchain==1.2.18
+langchain-core==1.8.4
+langchain-openai==1.8.5
+langchain-community==0.4.2
+langchain-chroma==1.2.0
+langchain-text-splitters==1.2.0
+langchain-classic==1.1.0
+langgraph==1.1.10
+
+# 存储与检索
+chromadb==1.5.9
+rank-bm25==0.2.2
+jieba==0.42.1
+tiktoken==0.14.0
+
+# 文档解析
+pymupdf==2.1
+python-docx==1.2.0
+markdown-it-py==4.3.0
+
+# 安全
+cryptography==50.0.2
