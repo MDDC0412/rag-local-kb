@@ -13,7 +13,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.errors import AppError
-from app.db.models import Base, TaskJob
+from app.db.models import Base, Chunk, Document, KnowledgeBase, TaskJob
 from app.services import jobs as job_service
 
 
@@ -27,6 +27,38 @@ async def session() -> AsyncSession:
     async with maker() as s:
         yield s
     await engine.dispose()
+
+
+async def _indexed_doc(session: AsyncSession, *, status: str, confirmed: int, pending: int) -> int:
+    """造一篇「分块已入库」的文档，用来验证重放时不会误判失败。"""
+    kb = KnowledgeBase(name=f"kb-{status}-{confirmed}-{pending}", description="")
+    session.add(kb)
+    await session.flush()
+    doc = Document(
+        kb_id=kb.id,
+        filename="a.txt",
+        stored_path="/tmp/nonexistent.txt",
+        file_hash=f"{status}-{confirmed}-{pending}",
+        status=status,
+    )
+    session.add(doc)
+    await session.flush()
+    for index in range(confirmed):
+        session.add(
+            Chunk(document_id=doc.id, kb_id=kb.id, seq=index, content="已入库", is_confirmed=1)
+        )
+    for index in range(pending):
+        session.add(
+            Chunk(
+                document_id=doc.id,
+                kb_id=kb.id,
+                seq=confirmed + index,
+                content="待入库",
+                is_confirmed=0,
+            )
+        )
+    await session.commit()
+    return doc.id
 
 
 @pytest.mark.asyncio
@@ -207,9 +239,45 @@ async def test_manual_retry_resets_attempts(session: AsyncSession) -> None:
 
 
 def test_retryable_classification() -> None:
+    """配置/数据类错误不重试（重试也还是错），网络类错误才值得重试。"""
     from app.workers.queue import _is_retryable
 
     assert _is_retryable(AppError("PROVIDER_UNAVAILABLE", "供应商连接失败")) is True
     assert _is_retryable(AppError("NO_CHUNKS_TO_INDEX", "没有待入库的分块")) is False
     assert _is_retryable(AppError("PROVIDER_NOT_FOUND", "没有可用的向量模型")) is False
     assert _is_retryable(RuntimeError("意外的底层异常")) is True
+
+
+@pytest.mark.asyncio
+async def test_replay_after_index_done_is_not_failure(session: AsyncSession) -> None:
+    """重放已完成入库的任务不该报错。
+
+    场景：任务在「写完向量库、还没标 done」之间被进程重启打断。
+    重启恢复后重跑，此时文档已经是 indexed 且没有未确认分块 ——
+    如果直接调 index_document 会抛 NO_CHUNKS_TO_INDEX，把一篇好文档误标成失败。
+    """
+    from app.workers.handlers import _already_indexed
+
+    document_id = await _indexed_doc(session, status="indexed", confirmed=3, pending=0)
+    message = await _already_indexed(session, document_id)
+
+    assert message is not None
+    assert "3 块" in message
+
+
+@pytest.mark.asyncio
+async def test_replay_with_pending_chunks_is_not_skipped(session: AsyncSession) -> None:
+    """还有未确认分块时不能跳过：那是真正待办的工作。"""
+    from app.workers.handlers import _already_indexed
+
+    document_id = await _indexed_doc(session, status="indexed", confirmed=2, pending=1)
+    assert await _already_indexed(session, document_id) is None
+
+
+@pytest.mark.asyncio
+async def test_replay_when_document_not_indexed_is_not_skipped(session: AsyncSession) -> None:
+    """文档状态不是 indexed 时必须真跑，不能靠「有分块」蒙混过关。"""
+    from app.workers.handlers import _already_indexed
+
+    document_id = await _indexed_doc(session, status="parsed", confirmed=3, pending=0)
+    assert await _already_indexed(session, document_id) is None

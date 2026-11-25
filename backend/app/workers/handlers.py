@@ -21,12 +21,33 @@ logger = logging.getLogger(__name__)
 
 
 async def _index_target(session: AsyncSession, job: TaskJob, report) -> str:
-    """向量化入库：先清该文档旧向量再写，保证重复执行不产生孤儿。"""
+    """向量化入库：先清该文档旧向量再写，保证重复执行不产生孤儿。
+
+    重入时若文档已经入库完成、没有待办分块，说明上次已经做完了
+    （任务在「写完库、还没标 done」之间被进程重启打断），直接算成功，
+    否则会拿 ``NO_CHUNKS_TO_INDEX`` 误报失败 —— 文档其实是好的。
+    """
     document_id = _require_target(job)
+    done = await _already_indexed(session, document_id)
+    if done is not None:
+        return done
+
     await report(5)
     count = await doc_service.index_document(session, document_id, on_progress=_bridge(report))
     await report(100)
     return f"已入库 {count} 块"
+
+
+async def _already_indexed(session: AsyncSession, document_id: int) -> str | None:
+    """如果这篇文档已经是「无待办分块 + 已入库」状态，返回说明；否则 None。"""
+    doc = await doc_service.get_document(session, document_id)
+    if doc.status != "indexed":
+        return None
+    chunks = await doc_service.list_chunks(session, document_id)
+    if not chunks or any(not chunk.is_confirmed for chunk in chunks):
+        return None
+    logger.info("文档 #%s 已是入库完成状态，跳过重复执行", document_id)
+    return f"文档已是入库状态（{len(chunks)} 块），无需重复入库"
 
 
 async def _reindex_target(session: AsyncSession, job: TaskJob, report) -> str:
