@@ -7,35 +7,30 @@ const ui = useUiStore()
 const route = useRoute()
 
 const nav = [
-  { to: '/', index: '01', title: '总览', sub: 'Overview' },
-  { to: '/providers', index: '02', title: '模型供应商', sub: 'Providers' },
-  { to: '/documents', index: '03', title: '文档库', sub: 'Documents', milestone: 'M1' },
-  { to: '/chat', index: '04', title: '对话', sub: 'Chat', milestone: 'M2' },
-  { to: '/lab', index: '05', title: 'RAG 实验室', sub: 'Lab', milestone: 'M4' },
-  { to: '/settings', index: '06', title: '设置', sub: 'Settings', milestone: 'M3' },
+  { to: '/', title: '总览' },
+  { to: '/providers', title: '模型供应商' },
+  { to: '/documents', title: '文档库', milestone: 'M1' },
+  { to: '/chat', title: '对话', milestone: 'M2' },
+  { to: '/lab', title: 'RAG 实验室', milestone: 'M4' },
+  { to: '/settings', title: '设置', milestone: 'M3' },
 ]
 
 const currentTitle = computed(() => (route.meta.title as string) ?? '')
-const currentIndex = computed(() => (route.meta.index as string) ?? '00')
 </script>
 
 <template>
   <div class="shell">
-    <!-- 左侧导航 -->
     <aside class="rail">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="26" height="26">
-            <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="1.2" />
-            <circle cx="16" cy="16" r="5" fill="currentColor" opacity="0.9" />
-            <path d="M16 3v7M16 22v7M3 16h7M22 16h7" stroke="currentColor" stroke-width="1.2" />
+      <RouterLink to="/" class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+            <rect x="2" y="3" width="16" height="3" rx="1.5" fill="currentColor" opacity="0.9" />
+            <rect x="2" y="8.5" width="10" height="3" rx="1.5" fill="currentColor" opacity="0.55" />
+            <rect x="2" y="14" width="13" height="3" rx="1.5" fill="currentColor" opacity="0.3" />
           </svg>
-        </div>
-        <div class="brand-text">
-          <div class="brand-name">RAG·LOCAL</div>
-          <div class="micro">个人知识库</div>
-        </div>
-      </div>
+        </span>
+        <span class="brand-name">本地 RAG</span>
+      </RouterLink>
 
       <nav class="nav">
         <RouterLink
@@ -45,37 +40,21 @@ const currentIndex = computed(() => (route.meta.index as string) ?? '00')
           class="nav-item"
           :class="{ active: route.path === item.to }"
         >
-          <span class="nav-index">{{ item.index }}</span>
           <span class="nav-label">{{ item.title }}</span>
-          <span v-if="item.milestone" class="nav-badge">{{ item.milestone }}</span>
-          <span class="nav-sub">{{ item.sub }}</span>
+          <span v-if="item.milestone" class="nav-tag">{{ item.milestone }}</span>
         </RouterLink>
       </nav>
 
       <div class="rail-foot">
-        <div class="rail-status">
-          <span class="dot dot-idle" />
-          <span class="micro">本地运行 · 单用户</span>
-        </div>
-        <button class="theme-toggle" @click="ui.toggle()">
-          <span class="micro">{{ ui.theme === 'dark' ? '深色' : '浅色' }}</span>
-          <span class="theme-track" :class="{ on: ui.theme === 'light' }">
-            <span class="theme-thumb" />
-          </span>
+        <button class="theme-btn" @click="ui.toggle()">
+          {{ ui.theme === 'dark' ? '切换到浅色' : '切换到深色' }}
         </button>
       </div>
     </aside>
 
-    <!-- 右侧主体 -->
     <div class="main">
       <header class="topbar">
-        <div class="topbar-left">
-          <span class="micro">{{ currentIndex }}</span>
-          <h1 class="topbar-title">{{ currentTitle }}</h1>
-        </div>
-        <div class="topbar-right">
-          <span class="micro">v0.1.0</span>
-        </div>
+        <h1 class="topbar-title">{{ currentTitle }}</h1>
       </header>
 
       <main class="content">
@@ -95,68 +74,59 @@ const currentIndex = computed(() => (route.meta.index as string) ?? '00')
   grid-template-columns: var(--rail-w) 1fr;
   height: 100vh;
   overflow: hidden;
-  position: relative;
-  z-index: 1;
 }
 
-/* ---------- 导航 ---------- */
+/* ---------- 侧栏 ---------- */
 .rail {
   display: flex;
   flex-direction: column;
-  min-height: 0;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
+  background: var(--bg-1);
   border-right: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
-  backdrop-filter: blur(12px);
 }
 
 .brand {
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-4) var(--sp-5);
-  border-bottom: 1px solid var(--line);
-  color: var(--amber);
-}
-.brand-mark {
-  color: var(--amber);
-  display: flex;
-}
-.brand-name {
-  font-family: var(--font-display);
-  font-size: 15px;
-  letter-spacing: 0.12em;
+  gap: 9px;
+  height: var(--topbar-h);
+  padding: 0 var(--sp-4);
   color: var(--text-0);
 }
-.brand-text .micro {
-  margin-top: 2px;
+.brand-mark {
+  display: flex;
+  color: var(--accent);
+}
+.brand-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .nav {
-  display: flex;
-  flex-direction: column;
-  padding: var(--sp-3) var(--sp-3) 0;
-  gap: 1px;
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-2) var(--sp-2);
 }
 
 .nav-item {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  grid-template-rows: auto auto;
-  column-gap: var(--sp-3);
+  display: flex;
   align-items: center;
-  padding: 7px var(--sp-3);
-  border: 1px solid transparent;
+  justify-content: space-between;
+  height: 34px;
+  padding: 0 10px;
   border-radius: var(--r-md);
   color: var(--text-1);
+  font-size: 13.5px;
   text-decoration: none;
-  position: relative;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .nav-item:hover {
   background: var(--bg-2);
@@ -164,101 +134,50 @@ const currentIndex = computed(() => (route.meta.index as string) ?? '00')
 }
 .nav-item.active {
   background: var(--bg-2);
-  border-color: var(--line-strong);
   color: var(--text-0);
+  font-weight: 500;
+}
+.nav-item.active .nav-label {
+  position: relative;
 }
 .nav-item.active::before {
   content: "";
   position: absolute;
-  left: -1px;
-  top: 8px;
-  bottom: 8px;
+  left: 0;
   width: 2px;
-  background: var(--amber);
+  height: 16px;
   border-radius: 2px;
+  background: var(--accent);
+  transform: translateX(-8px);
 }
-.nav-index {
+
+.nav-tag {
+  font-size: 11px;
+  color: var(--text-2);
   font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-3);
-  grid-row: 1 / 3;
-  align-self: start;
-  padding-top: 3px;
-}
-.nav-item.active .nav-index {
-  color: var(--amber);
-}
-.nav-label {
-  font-size: 13.5px;
-}
-.nav-sub {
-  grid-column: 2;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  color: var(--text-3);
-  text-transform: uppercase;
-}
-.nav-badge {
-  grid-row: 1;
-  grid-column: 3;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  padding: 0 4px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  color: var(--text-3);
 }
 
 .rail-foot {
   flex: none;
   margin-top: auto;
+  padding: var(--sp-3) var(--sp-2);
   border-top: 1px solid var(--line);
-  padding: var(--sp-3) var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
 }
-.rail-status {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.theme-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: transparent;
-  border: 1px solid var(--line);
+.theme-btn {
+  width: 100%;
+  height: 30px;
+  border: 1px solid transparent;
   border-radius: var(--r-md);
-  padding: 6px 10px;
+  background: transparent;
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: 12.5px;
   cursor: pointer;
-  color: var(--text-2);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.theme-toggle:hover {
-  border-color: var(--line-accent);
-}
-.theme-track {
-  width: 28px;
-  height: 14px;
-  border-radius: 99px;
-  background: var(--bg-3);
-  border: 1px solid var(--line-strong);
-  position: relative;
-  transition: background 0.2s;
-}
-.theme-thumb {
-  position: absolute;
-  top: 1px;
-  left: 1px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--amber);
-  transition: transform 0.2s cubic-bezier(0.2, 0.7, 0.3, 1);
-}
-.theme-track.on .theme-thumb {
-  transform: translateX(14px);
+.theme-btn:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
 }
 
 /* ---------- 主体 ---------- */
@@ -272,25 +191,16 @@ const currentIndex = computed(() => (route.meta.index as string) ?? '00')
 }
 
 .topbar {
-  height: var(--topbar-h);
   flex: none;
+  height: var(--topbar-h);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 0 var(--sp-6);
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
-  backdrop-filter: blur(10px);
-}
-.topbar-left {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
 }
 .topbar-title {
   font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.02em;
 }
 
 .content {

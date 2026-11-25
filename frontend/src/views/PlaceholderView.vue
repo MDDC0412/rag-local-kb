@@ -9,13 +9,11 @@ const milestone = computed(() => (route.meta.milestone as string) ?? '')
 
 <template>
   <div class="holder">
-    <div class="holder-mark">{{ milestone || '—' }}</div>
-    <h2 class="holder-title">{{ title }} 尚未开放</h2>
+    <h2 class="holder-title">{{ title }}</h2>
     <p class="holder-desc">
-      这个模块在里程碑 <span class="num">{{ milestone }}</span> 交付。
-      当前先完成 <RouterLink to="/providers">模型供应商</RouterLink> 配置，它是后面所有功能的前提。
+      这个模块还没有开放，计划在 <span class="tag">{{ milestone }}</span> 阶段交付。
     </p>
-    <div class="holder-meta micro">模块建设中</div>
+    <p class="holder-desc">现在可以先完成 <RouterLink to="/providers">模型供应商</RouterLink> 的配置，它是后面所有功能的前提。</p>
   </div>
 </template>
 
@@ -25,31 +23,18 @@ const milestone = computed(() => (route.meta.milestone as string) ?? '')
   flex-direction: column;
   justify-content: center;
   align-items: flex-start;
-  height: 100%;
-  min-height: 46vh;
   gap: var(--sp-3);
-  max-width: 620px;
-}
-.holder-mark {
-  font-family: var(--font-mono);
-  font-size: 64px;
-  line-height: 1;
-  color: var(--line-strong);
-  letter-spacing: 0.04em;
+  max-width: 560px;
+  min-height: 40vh;
 }
 .holder-title {
-  font-size: 20px;
+  font-size: 18px;
   color: var(--text-0);
 }
 .holder-desc {
   margin: 0;
-  color: var(--text-2);
+  color: var(--text-1);
   font-size: 13.5px;
-  line-height: 1.8;
-}
-.holder-meta {
-  padding-top: var(--sp-3);
-  border-top: 1px solid var(--line);
-  width: 100%;
+  line-height: 1.75;
 }
 </style>

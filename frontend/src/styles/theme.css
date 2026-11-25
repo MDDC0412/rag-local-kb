@@ -1,54 +1,51 @@
 /* ============================================================
-   设计令牌 —— 深色为默认，[data-theme="light"] 覆盖
-   风格：精密仪器（墨蓝黑 + 铜黄 + 青色数据）
-   所有颜色/间距/圆角只在这里定义，组件内禁止硬编码
+   设计令牌
+   深色为默认，[data-theme="light"] 覆盖
+   色调：GitHub Dark / Linear 那种克制的灰阶工具感
+   —— 单一强调色、无装饰纹理、留白优先
    ============================================================ */
 
 :root {
-  /* 表面层级：由深到浅 */
-  --bg-0: #080a0e;
-  --bg-1: #0d1117;
-  --bg-2: #121821;
-  --bg-3: #18202b;
-  --bg-hover: #1c2530;
+  /* 背景层级：从最深到最浅，差异极小 */
+  --bg-0: #0d1117; /* 页面底 */
+  --bg-1: #12161c; /* 卡片 */
+  --bg-2: #171c23; /* 悬浮/次级卡片 */
+  --bg-3: #1f252d; /* 输入框、标签底 */
+  --bg-hover: #1c222a;
 
-  /* 线条 */
-  --line: #1f2833;
-  --line-strong: #2c3846;
-  --line-accent: #3a4a5c;
+  /* 边框：非常淡，靠留白分层而不是靠线 */
+  --line: #21262d;
+  --line-strong: #30363d;
 
-  /* 文字 */
-  --text-0: #e9eef5;
-  --text-1: #a9b6c6;
-  --text-2: #6f7d8e;
-  --text-3: #4b5766;
+  /* 文字：三级足够 */
+  --text-0: #e6edf3;
+  --text-1: #9198a1;
+  --text-2: #6e7681;
 
-  /* 强调色 */
-  --amber: #e0a04a;
-  --amber-dim: #b57c33;
-  --amber-glow: rgba(224, 160, 74, 0.16);
-  --cyan: #4ecad8;
-  --cyan-dim: #2f8b96;
-  --cyan-glow: rgba(78, 202, 216, 0.14);
-  --green: #58c78d;
-  --red: #e0654f;
-  --violet: #9a8cf0;
+  /* 强调色：只用在关键动作与选中态 */
+  --accent: #2f81f7;
+  --accent-soft: rgba(47, 129, 247, 0.12);
+  --accent-border: rgba(47, 129, 247, 0.4);
 
-  /* 语义 */
-  --accent: var(--amber);
-  --accent-contrast: #120d05;
-  --ok: var(--green);
-  --danger: var(--red);
+  /* 语义色 */
+  --ok: #3fb950;
+  --ok-soft: rgba(63, 185, 80, 0.12);
+  --warn: #d29922;
+  --warn-soft: rgba(210, 153, 34, 0.12);
+  --danger: #f85149;
+  --danger-soft: rgba(248, 81, 73, 0.12);
 
-  /* 字体 */
-  --font-display: "Bahnschrift", "Segoe UI Variable Display", "Microsoft YaHei UI", sans-serif;
-  --font-body: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
-  --font-mono: "Cascadia Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  /* 字体：系统栈，中文优先 */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI",
+    "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
 
-  /* 尺度 */
-  --r-sm: 2px;
-  --r-md: 3px;
-  --r-lg: 4px;
+  /* 圆角 */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+
+  /* 间距（8pt 网格） */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -57,39 +54,42 @@
   --sp-6: 32px;
   --sp-7: 48px;
 
-  --rail-w: 236px;
+  /* 布局 */
+  --rail-w: 216px;
   --topbar-h: 56px;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 160ms;
 
   color-scheme: dark;
 }
 
 [data-theme="light"] {
-  --bg-0: #f4f2ee;
-  --bg-1: #fbfaf7;
-  --bg-2: #ffffff;
-  --bg-3: #f0ece5;
-  --bg-hover: #eae5dc;
+  --bg-0: #ffffff;
+  --bg-1: #f6f8fa;
+  --bg-2: #eef1f4;
+  --bg-3: #e7ebef;
+  --bg-hover: #eaeef2;
 
-  --line: #e0dad0;
-  --line-strong: #cbc4b7;
-  --line-accent: #b3a996;
+  --line: #d8dee4;
+  --line-strong: #d0d7de;
 
-  --text-0: #1b1a17;
-  --text-1: #4d4a43;
-  --text-2: #7c776c;
-  --text-3: #a39d90;
+  --text-0: #1f2328;
+  --text-1: #59636e;
+  --text-2: #818b98;
 
-  --amber: #a8701e;
-  --amber-dim: #8a5a14;
-  --amber-glow: rgba(168, 112, 30, 0.12);
-  --cyan: #1c7f8c;
-  --cyan-dim: #14606a;
-  --cyan-glow: rgba(28, 127, 140, 0.1);
-  --green: #2f8f5b;
-  --red: #b3402d;
-  --violet: #6a5acd;
+  --accent: #0969da;
+  --accent-soft: rgba(9, 105, 218, 0.08);
+  --accent-border: rgba(9, 105, 218, 0.35);
 
-  --accent-contrast: #fffdf8;
+  --ok: #1a7f37;
+  --ok-soft: rgba(26, 127, 55, 0.08);
+  --warn: #9a6700;
+  --warn-soft: rgba(154, 103, 0, 0.08);
+  --danger: #cf222e;
+  --danger-soft: rgba(207, 34, 46, 0.07);
+
   color-scheme: light;
 }
 
@@ -107,36 +107,24 @@ body,
 body {
   background: var(--bg-0);
   color: var(--text-0);
-  font-family: var(--font-body);
+  font-family: var(--font);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-}
-
-/* 极细网格纹理：营造仪器面板的质感，不抢内容 */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image: linear-gradient(var(--line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line) 1px, transparent 1px);
-  background-size: 64px 64px;
-  opacity: 0.28;
-  mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 78%);
-  -webkit-mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 78%);
 }
 
 h1,
 h2,
 h3,
 h4 {
-  font-family: var(--font-display);
+  margin: 0;
   font-weight: 600;
   letter-spacing: -0.01em;
-  margin: 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
 }
 
 code,
@@ -145,20 +133,20 @@ kbd,
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  font-size: 0.92em;
 }
 
-a {
-  color: var(--cyan);
-  text-decoration: none;
+/* 区块标题：正常中文，不用大写字母间距 */
+.section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
 }
 
-/* 微型大写标签 */
-.micro {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+.hint-text {
+  font-size: 12px;
   color: var(--text-2);
+  line-height: 1.6;
 }
 
 /* 滚动条 */
@@ -172,148 +160,181 @@ a {
 ::-webkit-scrollbar-thumb {
   background: var(--line-strong);
   border-radius: 99px;
-  border: 2px solid var(--bg-0);
+  border: 3px solid var(--bg-0);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--line-accent);
+  background: var(--text-2);
 }
 
-/* ---- 通用按钮 ---- */
+/* ---- 按钮 ---- */
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  padding: 6px 14px;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   background: var(--bg-2);
   color: var(--text-0);
-  font-family: var(--font-body);
+  font-family: inherit;
   font-size: 13px;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.08s;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
   user-select: none;
+  white-space: nowrap;
 }
-.btn:hover {
-  background: var(--bg-hover);
-  border-color: var(--line-accent);
+.btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--text-2);
 }
-.btn:active {
-  transform: translateY(1px);
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
 .btn-primary {
-  background: var(--amber);
-  border-color: var(--amber);
-  color: var(--accent-contrast);
-  font-weight: 600;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
 }
-.btn-primary:hover {
-  background: var(--amber-dim);
-  border-color: var(--amber-dim);
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #fff);
+  border-color: color-mix(in srgb, var(--accent) 88%, #fff);
 }
-.btn-ghost {
+
+.btn-quiet {
   background: transparent;
   border-color: transparent;
   color: var(--text-1);
 }
-.btn-ghost:hover {
-  background: var(--bg-hover);
+.btn-quiet:hover:not(:disabled) {
+  background: var(--bg-2);
   color: var(--text-0);
+  border-color: transparent;
 }
+
 .btn-sm {
-  padding: 3px 9px;
+  height: 26px;
+  padding: 0 9px;
   font-size: 12px;
 }
-.btn-danger:hover {
-  border-color: var(--red);
-  color: var(--red);
+
+.btn-danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
 }
 
 /* ---- 标签 ---- */
 .tag {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 1px 7px;
-  border: 1px solid var(--line-strong);
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
   border-radius: var(--r-sm);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
+  font-size: 11.5px;
+  line-height: 1;
   color: var(--text-1);
   background: var(--bg-3);
+  border: 1px solid transparent;
+  white-space: nowrap;
 }
-.tag-amber {
-  color: var(--amber);
-  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
-  background: var(--amber-glow);
+.tag-accent {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
 }
-.tag-cyan {
-  color: var(--cyan);
-  border-color: color-mix(in srgb, var(--cyan) 40%, transparent);
-  background: var(--cyan-glow);
+.tag-ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
 }
-.tag-green {
-  color: var(--green);
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
-  background: color-mix(in srgb, var(--green) 12%, transparent);
+.tag-warn {
+  color: var(--warn);
+  background: var(--warn-soft);
 }
-.tag-red {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 40%, transparent);
-  background: color-mix(in srgb, var(--red) 12%, transparent);
+.tag-danger {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
-/* ---- 输入 ---- */
+/* ---- 表单 ---- */
 .field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 .field > label {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-1);
 }
 .field .hint {
   font-size: 12px;
-  color: var(--text-3);
-  line-height: 1.5;
+  color: var(--text-2);
+  line-height: 1.55;
 }
+
 input[type="text"],
 input[type="password"],
 input[type="number"],
 textarea,
 select {
   width: 100%;
-  padding: 7px 10px;
+  height: 34px;
+  padding: 0 10px;
   background: var(--bg-0);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   color: var(--text-0);
-  font-family: var(--font-mono);
+  font-family: inherit;
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+textarea {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.6;
+  resize: vertical;
+}
+input.mono,
+.mono-input {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
 }
 input:focus,
 textarea:focus,
 select:focus {
-  border-color: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-glow);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 input::placeholder,
 textarea::placeholder {
-  color: var(--text-3);
+  color: var(--text-2);
 }
 select {
   cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
+    linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
 }
 
 /* ---- 卡片 ---- */
@@ -325,38 +346,34 @@ select {
 
 /* ---- 状态点 ---- */
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   display: inline-block;
   flex: none;
 }
 .dot-ok {
-  background: var(--green);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 18%, transparent);
-}
-.dot-bad {
-  background: var(--red);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent);
+  background: var(--ok);
 }
 .dot-idle {
-  background: var(--text-3);
+  background: var(--text-2);
+}
+.dot-bad {
+  background: var(--danger);
 }
 
-/* ---- 路由切换动效 ---- */
+/* ---- 过渡 ---- */
 .view-enter-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 140ms var(--ease);
 }
 .view-enter-from {
   opacity: 0;
-  transform: translateY(6px);
 }
 
-/* ---- 交错入场 ---- */
-@keyframes rise {
+@keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -364,5 +381,5 @@ select {
   }
 }
 .rise {
-  animation: rise 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  animation: fade-up 280ms var(--ease) both;
 }

@@ -32,86 +32,87 @@ const ready = computed(
   () => counts.value.llm > 0 && counts.value.embedding > 0 && counts.value.rerank > 0,
 )
 
-const steps = [
-  { index: '01', title: '接入模型', desc: '配置对话 / 向量 / 重排三类供应商，逐一点"测试连接"确认可用。', to: '/providers', done: ready.value },
-  { index: '02', title: '上传文档', desc: '支持 txt / md / pdf / docx，解析后可预览、可手改分块。', to: '/documents', done: false },
-  { index: '03', title: '开始对话', desc: '混合检索（向量 + BM25 + 重排）后带引用作答。', to: '/chat', done: false },
-  { index: '04', title: '看原理', desc: '在实验室里把文本变成向量，亲手算一次余弦相似度。', to: '/lab', done: false },
-]
+const steps = computed(() => [
+  {
+    title: '配置模型',
+    desc: '添加对话、向量、重排三类供应商，各点一次测试连接确认可用。',
+    to: '/providers',
+    done: ready.value,
+  },
+  { title: '上传文档', desc: '支持 txt、md、pdf、docx，解析后可预览并修改分块。', to: '/documents', done: false },
+  { title: '开始对话', desc: '混合检索加引用回答，每个结论都能点开看原文。', to: '/chat', done: false },
+  { title: '了解原理', desc: '在实验室里看文本如何变成向量、相似度如何计算。', to: '/lab', done: false },
+])
 </script>
 
 <template>
   <div class="dash">
-    <!-- 首屏：状态 -->
-    <section class="hero rise">
-      <div class="hero-main">
-        <div class="micro">SYSTEM STATUS</div>
-        <h2 class="hero-title">
-          本地知识库
-          <span class="hero-accent">{{ ready ? '已就绪' : '待配置' }}</span>
-        </h2>
-        <p class="hero-sub">
-          所有数据都在你自己的电脑上：文档、向量、会话都存在本地 SQLite 与 Chroma，
-          只有调用模型时才会出网。
-        </p>
-      </div>
+    <section class="intro">
+      <h2 class="intro-title">你的本地知识库</h2>
+      <p class="intro-desc">
+        文档、向量和会话都存放在本机，只有调用模型时才需要联网。所有环节都可以自己调参和查看。
+      </p>
+    </section>
 
-      <div class="hero-meters">
-        <div class="meter">
-          <div class="meter-num num">{{ counts.llm }}</div>
-          <div class="micro">对话模型</div>
+    <section class="meters">
+      <div class="meter">
+        <div class="meter-label">对话模型</div>
+        <div class="meter-value">
+          <span class="num">{{ counts.llm }}</span>
           <span class="dot" :class="counts.llm ? 'dot-ok' : 'dot-idle'" />
         </div>
-        <div class="meter">
-          <div class="meter-num num">{{ counts.embedding }}</div>
-          <div class="micro">向量模型</div>
+      </div>
+      <div class="meter">
+        <div class="meter-label">向量模型</div>
+        <div class="meter-value">
+          <span class="num">{{ counts.embedding }}</span>
           <span class="dot" :class="counts.embedding ? 'dot-ok' : 'dot-idle'" />
         </div>
-        <div class="meter">
-          <div class="meter-num num">{{ counts.rerank }}</div>
-          <div class="micro">重排模型</div>
+      </div>
+      <div class="meter">
+        <div class="meter-label">重排模型</div>
+        <div class="meter-value">
+          <span class="num">{{ counts.rerank }}</span>
           <span class="dot" :class="counts.rerank ? 'dot-ok' : 'dot-idle'" />
         </div>
       </div>
+      <div class="meter meter-wide">
+        <div class="meter-label">状态</div>
+        <div class="meter-value">
+          <span class="tag" :class="ready ? 'tag-ok' : 'tag-warn'">
+            {{ ready ? '可以开始使用' : '还缺供应商' }}
+          </span>
+        </div>
+      </div>
     </section>
 
-    <!-- 步骤 -->
     <section class="steps">
       <RouterLink
         v-for="(step, i) in steps"
-        :key="step.index"
+        :key="step.title"
         :to="step.to"
         class="step card rise"
-        :style="{ animationDelay: `${80 + i * 60}ms` }"
+        :style="{ animationDelay: `${i * 40}ms` }"
       >
         <div class="step-head">
-          <span class="step-index">{{ step.index }}</span>
-          <span v-if="step.done" class="tag tag-green">完成</span>
+          <h3 class="step-title">{{ step.title }}</h3>
+          <span v-if="step.done" class="tag tag-ok">已完成</span>
         </div>
-        <h3 class="step-title">{{ step.title }}</h3>
         <p class="step-desc">{{ step.desc }}</p>
-        <span class="step-arrow">→</span>
       </RouterLink>
     </section>
 
-    <!-- 环境信息 -->
-    <section class="panel card rise" style="animation-delay: 340ms">
-      <div class="panel-head">
-        <span class="micro">运行环境</span>
-        <span v-if="health" class="tag tag-green">后端在线</span>
-        <span v-else class="tag tag-red">后端未连接</span>
+    <section class="info card">
+      <div class="info-row">
+        <span class="info-label">后端</span>
+        <span v-if="health" class="tag tag-ok">{{ health.version }}</span>
+        <span v-else class="tag tag-danger">未连接</span>
       </div>
-      <dl class="kv">
-        <div>
-          <dt>接口版本</dt>
-          <dd class="num">{{ health?.version ?? '—' }}</dd>
-        </div>
-        <div>
-          <dt>数据目录</dt>
-          <dd class="path">{{ health?.data_dir ?? '—' }}</dd>
-        </div>
-      </dl>
-      <p v-if="healthError" class="err">{{ healthError }}</p>
+      <div class="info-row">
+        <span class="info-label">数据目录</span>
+        <span class="info-value mono">{{ health?.data_dir ?? '—' }}</span>
+      </div>
+      <p v-if="healthError" class="error">{{ healthError }}</p>
     </section>
   </div>
 </template>
@@ -120,104 +121,71 @@ const steps = [
 .dash {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
-  max-width: 1180px;
+  gap: var(--sp-6);
+  max-width: 1000px;
 }
 
-/* ---------- hero ---------- */
-.hero {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--sp-6);
-  align-items: end;
-  padding-bottom: var(--sp-5);
-  border-bottom: 1px solid var(--line);
+.intro-title {
+  font-size: 22px;
+  margin-bottom: 8px;
 }
-.hero-title {
-  font-size: 34px;
-  line-height: 1.15;
-  margin: var(--sp-2) 0 var(--sp-3);
-  letter-spacing: -0.02em;
-}
-.hero-accent {
-  color: var(--amber);
-  position: relative;
-}
-.hero-accent::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 2px;
-  height: 1px;
-  background: var(--amber);
-  opacity: 0.4;
-}
-.hero-sub {
+.intro-desc {
   margin: 0;
-  max-width: 52ch;
+  max-width: 60ch;
   color: var(--text-1);
   font-size: 13.5px;
-  line-height: 1.75;
+  line-height: 1.7;
 }
 
-.hero-meters {
-  display: flex;
-  gap: var(--sp-2);
-}
-.meter {
-  min-width: 84px;
-  padding: var(--sp-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  position: relative;
-}
-.meter-num {
-  font-size: 26px;
-  line-height: 1;
-  color: var(--text-0);
-  font-weight: 600;
-}
-.meter .dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-}
-
-/* ---------- steps ---------- */
-.steps {
+.meters {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  gap: var(--sp-3);
+  padding: var(--sp-4) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.meter-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.meter-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.meter-value .tag {
+  font-size: 12px;
+  height: 22px;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: var(--sp-3);
 }
 .step {
   padding: var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   color: inherit;
-  transition: border-color 0.18s, background 0.18s, transform 0.18s;
-  position: relative;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 .step:hover {
-  border-color: var(--line-accent);
   background: var(--bg-2);
-  transform: translateY(-2px);
+  border-color: var(--line-strong);
 }
 .step-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-.step-index {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: var(--amber);
+  margin-bottom: 6px;
 }
 .step-title {
   font-size: 14px;
@@ -225,66 +193,46 @@ const steps = [
 .step-desc {
   margin: 0;
   font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text-2);
-}
-.step-arrow {
-  position: absolute;
-  right: 12px;
-  bottom: 10px;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-}
-.step:hover .step-arrow {
-  color: var(--amber);
+  line-height: 1.65;
+  color: var(--text-1);
 }
 
-/* ---------- panel ---------- */
-.panel {
-  padding: var(--sp-4) var(--sp-5);
-}
-.panel-head {
+.info {
+  padding: var(--sp-4);
   display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.info-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
   align-items: center;
   gap: var(--sp-3);
-  margin-bottom: var(--sp-3);
-}
-.kv {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--sp-4);
-  margin: 0;
-}
-.kv dt {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-3);
-  margin-bottom: 3px;
-}
-.kv dd {
-  margin: 0;
   font-size: 13px;
+}
+.info-row > .tag {
+  justify-self: start;
+}
+.info-label {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.info-value {
   color: var(--text-1);
   word-break: break-all;
+  font-size: 12px;
 }
-.path {
-  font-family: var(--font-mono);
-  font-size: 12px !important;
-  color: var(--text-2) !important;
-}
-.err {
-  margin: var(--sp-3) 0 0;
-  color: var(--red);
+.error {
+  margin: 0;
+  color: var(--danger);
   font-size: 12.5px;
 }
 
-@media (max-width: 1080px) {
-  .steps {
+@media (max-width: 900px) {
+  .meters {
     grid-template-columns: repeat(2, 1fr);
   }
-  .hero {
+  .steps {
     grid-template-columns: 1fr;
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, onMounted, ref } from 'vue'
 import { ApiError } from '@/api/http'
 import {
   KIND_LABEL,
@@ -19,14 +19,20 @@ const store = useProvidersStore()
 
 const kinds: ProviderKind[] = ['llm', 'embedding', 'rerank']
 
-const protocolOptions = computed<Protocol[]>(() => {
-  if (form.kind === 'rerank') {
-    return ['dashscope_rerank', 'siliconflow_rerank', 'cohere_rerank']
-  }
-  return ['openai']
+const protocolOptions = computed<Protocol[]>(() =>
+  form.kind === 'rerank'
+    ? ['dashscope_rerank', 'siliconflow_rerank', 'cohere_rerank']
+    : ['openai'],
+)
+
+// ---------------- 列表 ----------------
+const openGroups = reactive<Record<ProviderKind, boolean>>({
+  llm: true,
+  embedding: true,
+  rerank: true,
 })
 
-// ---------------- 表单状态 ----------------
+// ---------------- 表单 ----------------
 const editingId = ref<number | null>(null)
 const formOpen = ref(false)
 const saving = ref(false)
@@ -63,8 +69,12 @@ function resetForm() {
   editingId.value = null
 }
 
-function openCreate() {
+function openCreate(kind?: ProviderKind) {
   resetForm()
+  if (kind) {
+    form.kind = kind
+    form.protocol = kind === 'rerank' ? 'dashscope_rerank' : 'openai'
+  }
   formOpen.value = true
 }
 
@@ -74,7 +84,7 @@ function openEdit(p: Provider) {
   form.kind = p.kind
   form.name = p.name
   form.base_url = p.base_url
-  form.api_key = '' // 留空=不修改
+  form.api_key = ''
   form.model = p.model
   form.protocol = p.protocol
   form.is_default = p.is_default
@@ -96,7 +106,7 @@ function onKindChange() {
 async function save() {
   formError.value = ''
   if (!form.name.trim()) return (formError.value = '请填写名称')
-  if (!form.base_url.trim()) return (formError.value = '请填写 base_url')
+  if (!form.base_url.trim()) return (formError.value = '请填写接口地址')
   if (!form.model.trim()) return (formError.value = '请填写模型名')
   if (editingId.value === null && !form.api_key.trim()) {
     return (formError.value = '新建时必须填写 API Key')
@@ -108,7 +118,7 @@ async function save() {
       await store.create({ ...form })
     } else {
       const patch: Partial<ProviderDraft> = { ...form }
-      if (!patch.api_key) delete patch.api_key // 空字符串表示不改
+      if (!patch.api_key) delete patch.api_key
       await store.update(editingId.value, patch)
     }
     formOpen.value = false
@@ -133,11 +143,11 @@ async function runDraftTest() {
   draftTest.error = ''
   draftTest.result = undefined
   if (!form.base_url || !form.model) {
-    draftTest.error = '先填 base_url 和模型名'
+    draftTest.error = '先填写接口地址和模型名'
     return
   }
   if (!form.api_key && editingId.value !== null) {
-    draftTest.error = '编辑已有供应商时，测试请直接点卡片上的「测试」'
+    draftTest.error = '编辑已有供应商时，请直接点卡片上的「测试连接」'
     return
   }
   draftTest.loading = true
@@ -151,7 +161,7 @@ async function runDraftTest() {
 }
 
 async function remove(p: Provider) {
-  if (!confirm(`删除供应商「${p.name}」？已有文档的向量不受影响，但需要重新配置才能继续向量化。`)) return
+  if (!confirm(`删除供应商「${p.name}」？`)) return
   try {
     await store.remove(p.id)
   } catch (e) {
@@ -171,121 +181,115 @@ onMounted(() => store.load())
 </script>
 
 <template>
-  <div class="providers">
-    <header class="head rise">
-      <div>
-        <p class="lead">
-          三类供应商各司其职：<b>对话模型</b>负责回答，<b>向量模型</b>把文本变成向量（建索引和检索都要用），
-          <b>重排模型</b>在候选结果里精挑细选。同一家平台可以同时提供三类，也可以分开配。
-        </p>
-      </div>
-      <button class="btn btn-primary" @click="openCreate">+ 新增供应商</button>
+  <div class="page">
+    <header class="page-head">
+      <p class="page-desc">
+        对话模型负责回答；向量模型把文本转成数字向量，建索引和检索都靠它；重排模型在候选结果里再精挑一遍。
+        三者可以是同一家平台，也可以分开配。
+      </p>
+      <button class="btn btn-primary" @click="openCreate()">添加供应商</button>
     </header>
 
     <p v-if="store.error" class="alert">{{ store.error }}</p>
 
-    <!-- 分组列表 -->
-    <section v-for="(kind, gi) in kinds" :key="kind" class="group rise" :style="{ animationDelay: `${gi * 70}ms` }">
+    <section v-for="kind in kinds" :key="kind" class="group">
       <div class="group-head">
-        <span class="group-dot" />
-        <h2 class="group-title">{{ KIND_LABEL[kind] }}</h2>
-        <span class="micro">{{ kind }}</span>
-        <span class="group-count num">{{ store.byKind(kind).length }}</span>
+        <button class="group-toggle" @click="openGroups[kind] = !openGroups[kind]">
+          <span class="caret" :class="{ open: openGroups[kind] }">›</span>
+          <span class="section-title">{{ KIND_LABEL[kind] }}</span>
+          <span class="count">{{ store.byKind(kind).length }}</span>
+        </button>
+        <button class="btn btn-sm btn-quiet" @click="openCreate(kind)">添加</button>
       </div>
 
-      <p v-if="!store.byKind(kind).length" class="empty">
-        {{ kind === 'embedding'
-          ? '还没有向量模型。没有它，文档无法入库、问题无法检索。'
-          : kind === 'rerank'
-            ? '还没有重排模型。可以先跳过，检索会退化为向量 + BM25 融合排序。'
-            : '还没有对话模型。没有它，系统无法回答问题。' }}
-      </p>
+      <template v-if="openGroups[kind]">
+        <p v-if="!store.byKind(kind).length" class="empty">
+          {{
+            kind === 'embedding'
+              ? '还没有向量模型。没有它，文档无法入库，问题也无法检索。'
+              : kind === 'rerank'
+                ? '还没有重排模型。可以先跳过，检索会退化成向量加 BM25 的融合排序。'
+                : '还没有对话模型。没有它，系统无法回答问题。'
+          }}
+        </p>
 
-      <div class="cards">
-        <article v-for="p in store.byKind(kind)" :key="p.id" class="pcard">
-          <div class="pcard-top">
-            <div class="pcard-name">
+        <div v-for="p in store.byKind(kind)" :key="p.id" class="pcard">
+          <div class="pcard-main">
+            <div class="pcard-title">
               <span class="dot" :class="p.enabled ? 'dot-ok' : 'dot-idle'" />
-              <strong>{{ p.name }}</strong>
-              <span v-if="p.is_default" class="tag tag-amber">默认</span>
+              <span class="pcard-name">{{ p.name }}</span>
+              <span v-if="p.is_default" class="tag tag-accent">默认</span>
             </div>
-            <div class="pcard-actions">
-              <button class="btn btn-sm btn-ghost" @click="openEdit(p)">编辑</button>
-              <button class="btn btn-sm btn-ghost btn-danger" @click="remove(p)">删除</button>
+            <div class="pcard-fields">
+              <div class="pf">
+                <span class="pf-label">模型</span>
+                <span class="pf-value mono">{{ p.model }}</span>
+              </div>
+              <div class="pf">
+                <span class="pf-label">接口地址</span>
+                <span class="pf-value mono ellipsis" :title="p.base_url">{{ p.base_url }}</span>
+              </div>
+              <div class="pf">
+                <span class="pf-label">协议</span>
+                <span class="pf-value">{{ PROTOCOL_LABEL[p.protocol] ?? p.protocol }}</span>
+              </div>
+              <div class="pf">
+                <span class="pf-label">密钥</span>
+                <span class="pf-value mono">{{ p.has_api_key ? p.api_key_masked : '未配置' }}</span>
+              </div>
             </div>
           </div>
 
-          <dl class="pcard-meta">
-            <div class="col-model">
-              <dt>模型</dt>
-              <dd class="mono">{{ p.model }}</dd>
-            </div>
-            <div class="col-url">
-              <dt>地址</dt>
-              <dd class="mono ellipsis" :title="p.base_url">{{ p.base_url }}</dd>
-            </div>
-            <div class="col-proto">
-              <dt>协议</dt>
-              <dd class="mono">{{ PROTOCOL_LABEL[p.protocol] ?? p.protocol }}</dd>
-            </div>
-            <div class="col-key">
-              <dt>密钥</dt>
-              <dd class="mono">{{ p.has_api_key ? p.api_key_masked : '未配置' }}</dd>
-            </div>
-          </dl>
-
-          <div class="pcard-foot">
+          <div class="pcard-side">
             <button class="btn btn-sm" :disabled="testState[p.id]?.loading" @click="runTest(p.id)">
-              {{ testState[p.id]?.loading ? '测试中…' : '测试连接' }}
+              {{ testState[p.id]?.loading ? '测试中' : '测试连接' }}
             </button>
-            <button v-if="!p.is_default" class="btn btn-sm btn-ghost" @click="makeDefault(p)">设为默认</button>
+            <button v-if="!p.is_default" class="btn btn-sm btn-quiet" @click="makeDefault(p)">
+              设为默认
+            </button>
+            <button class="btn btn-sm btn-quiet" @click="openEdit(p)">编辑</button>
+            <button class="btn btn-sm btn-quiet btn-danger" @click="remove(p)">删除</button>
           </div>
 
           <div v-if="testState[p.id]?.error" class="result bad">{{ testState[p.id]?.error }}</div>
           <div v-else-if="testState[p.id]?.result" class="result good">
-            <div class="result-line">
-              <span class="dot dot-ok" />
-              <span>{{ testState[p.id]?.result?.message }}</span>
-            </div>
-            <div v-if="testState[p.id]?.result?.models?.length" class="result-models">
-              <span
-                v-for="m in testState[p.id]?.result?.models?.slice(0, 8)"
-                :key="m"
-                class="tag"
-                :class="{ 'tag-cyan': m === p.model }"
-              >
-                {{ m }}
-              </span>
-              <span v-if="(testState[p.id]?.result?.model_count ?? 0) > 8" class="more">
-                +{{ (testState[p.id]?.result?.model_count ?? 0) - 8 }}
-              </span>
-            </div>
-            <div v-if="testState[p.id]?.result?.results?.length" class="result-models">
-              <span v-for="r in testState[p.id]?.result?.results" :key="r.index" class="tag">
-                #{{ r.index }} → {{ r.score.toFixed(4) }}
-              </span>
-            </div>
+            <span class="dot dot-ok" />
+            <span>{{ testState[p.id]?.result?.message }}</span>
+            <span
+              v-for="m in testState[p.id]?.result?.models?.slice(0, 6)"
+              :key="m"
+              class="tag"
+              :class="{ 'tag-accent': m === p.model }"
+            >
+              {{ m }}
+            </span>
+            <span v-if="(testState[p.id]?.result?.model_count ?? 0) > 6" class="tag">
+              +{{ (testState[p.id]?.result?.model_count ?? 0) - 6 }}
+            </span>
+            <span v-for="r in testState[p.id]?.result?.results ?? []" :key="r.index" class="tag mono">
+              #{{ r.index }} {{ r.score.toFixed(3) }}
+            </span>
           </div>
-        </article>
-      </div>
+        </div>
+      </template>
     </section>
 
-    <!-- 新增/编辑 弹层 -->
+    <!-- 表单弹层 -->
     <Teleport to="body">
       <div v-if="formOpen" class="overlay" @click.self="formOpen = false">
         <div class="modal">
           <header class="modal-head">
-            <h3>{{ editingId === null ? '新增供应商' : '编辑供应商' }}</h3>
-            <button class="btn btn-sm btn-ghost" @click="formOpen = false">关闭</button>
+            <h3>{{ editingId === null ? '添加供应商' : '编辑供应商' }}</h3>
+            <button class="btn btn-sm btn-quiet" @click="formOpen = false">关闭</button>
           </header>
 
           <div class="modal-body">
             <div v-if="editingId === null" class="presets">
-              <div class="micro">快速套用</div>
+              <div class="presets-label">常用配置</div>
               <div class="preset-row">
                 <button v-for="p in PRESETS" :key="p.key" class="preset" @click="applyPreset(p)">
-                  <strong>{{ p.label }}</strong>
-                  <span>{{ p.note }}</span>
+                  <span class="preset-name">{{ p.label }}</span>
+                  <span class="preset-note">{{ p.note }}</span>
                 </button>
               </div>
             </div>
@@ -293,17 +297,9 @@ onMounted(() => store.load())
             <div class="form-grid">
               <div class="field">
                 <label>类型</label>
-                <div class="seg">
-                  <button
-                    v-for="k in kinds"
-                    :key="k"
-                    class="seg-btn"
-                    :class="{ on: form.kind === k }"
-                    @click="(form.kind = k), onKindChange()"
-                  >
-                    {{ KIND_LABEL[k] }}
-                  </button>
-                </div>
+                <select v-model="form.kind" @change="onKindChange">
+                  <option v-for="k in kinds" :key="k" :value="k">{{ KIND_LABEL[k] }}</option>
+                </select>
               </div>
 
               <div class="field">
@@ -312,27 +308,28 @@ onMounted(() => store.load())
               </div>
 
               <div class="field span-2">
-                <label>Base URL</label>
-                <input v-model="form.base_url" type="text" placeholder="https://.../v1" />
+                <label>接口地址</label>
+                <input v-model="form.base_url" type="text" class="mono-input" placeholder="https://…/v1" />
                 <span class="hint">
-                  多填一层路径没关系，系统会按协议自行拼出正确的接口地址；重排用 DashScope 协议时只取域名根。
+                  多写一层路径也没关系，系统会按协议拼出正确的接口地址；重排若用阿里原生协议，会自动取域名根。
                 </span>
               </div>
 
               <div class="field span-2">
-                <label>API Key{{ editingId !== null ? '（留空=不修改）' : '' }}</label>
+                <label>API Key{{ editingId !== null ? '（留空表示不修改）' : '' }}</label>
                 <input
                   v-model="form.api_key"
                   type="password"
-                  :placeholder="editingId !== null ? '已保存的密钥不会显示' : 'sk-...'"
+                  class="mono-input"
+                  :placeholder="editingId !== null ? '已保存的密钥不回显' : 'sk-…'"
                   autocomplete="off"
                 />
-                <span class="hint">密钥会用 Fernet 加密后存进本地数据库，接口只回传打码后的形式。</span>
+                <span class="hint">用 Fernet 加密后存入本地数据库，接口只返回打码后的形式。</span>
               </div>
 
               <div class="field">
                 <label>模型名</label>
-                <input v-model="form.model" type="text" placeholder="例如：qwen3.7-text-embedding-flash" />
+                <input v-model="form.model" type="text" class="mono-input" placeholder="模型 ID" />
               </div>
 
               <div class="field">
@@ -345,30 +342,6 @@ onMounted(() => store.load())
               </div>
             </div>
 
-            <div class="draft-test">
-              <button class="btn" :disabled="draftTest.loading" @click="runDraftTest">
-                {{ draftTest.loading ? '测试中…' : '测试连接（不保存）' }}
-              </button>
-              <div v-if="draftTest.error" class="result bad">{{ draftTest.error }}</div>
-              <div v-else-if="draftTest.result" class="result good">
-                <div class="result-line">
-                  <span class="dot dot-ok" />
-                  <span>{{ draftTest.result.message }}</span>
-                </div>
-                <div v-if="draftTest.result.models?.length" class="result-models">
-                  <span v-for="m in draftTest.result.models.slice(0, 10)" :key="m" class="tag">{{ m }}</span>
-                </div>
-                <div v-if="draftTest.result.results?.length" class="result-models">
-                  <span v-for="r in draftTest.result.results" :key="r.index" class="tag">
-                    #{{ r.index }} → {{ r.score.toFixed(4) }}
-                  </span>
-                  <span class="tag" :class="draftTest.result.sanity_passed ? 'tag-green' : 'tag-red'">
-                    {{ draftTest.result.sanity_passed ? '排序正常' : '排序异常，检查协议' }}
-                  </span>
-                </div>
-              </div>
-            </div>
-
             <label class="check">
               <input v-model="form.is_default" type="checkbox" />
               <span>设为该类型的默认供应商</span>
@@ -378,7 +351,26 @@ onMounted(() => store.load())
           </div>
 
           <footer class="modal-foot">
-            <button class="btn btn-ghost" @click="formOpen = false">取消</button>
+            <div class="draft-test foot-left">
+              <button class="btn btn-sm" :disabled="draftTest.loading" @click="runDraftTest">
+                {{ draftTest.loading ? '测试中…' : '测试连接' }}
+              </button>
+              <span v-if="draftTest.error" class="foot-msg bad">{{ draftTest.error }}</span>
+              <template v-else-if="draftTest.result">
+                <span class="foot-msg good">{{ draftTest.result.message }}</span>
+                <span v-for="r in draftTest.result.results ?? []" :key="r.index" class="tag mono">
+                  #{{ r.index }} {{ r.score.toFixed(3) }}
+                </span>
+                <span
+                  v-if="draftTest.result.results?.length"
+                  class="tag"
+                  :class="draftTest.result.sanity_passed ? 'tag-ok' : 'tag-danger'"
+                >
+                  {{ draftTest.result.sanity_passed ? '排序正常' : '排序异常' }}
+                </span>
+              </template>
+            </div>
+            <button class="btn btn-quiet" @click="formOpen = false">取消</button>
             <button class="btn btn-primary" :disabled="saving" @click="save">
               {{ saving ? '保存中…' : '保存' }}
             </button>
@@ -390,57 +382,74 @@ onMounted(() => store.load())
 </template>
 
 <style scoped>
-.providers {
-  max-width: 1080px;
+.page {
+  max-width: 1000px;
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
 }
 
-.head {
+.page-head {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
+  justify-content: space-between;
   gap: var(--sp-5);
 }
-.lead {
+.page-desc {
   margin: 0;
-  max-width: 64ch;
+  max-width: 62ch;
   color: var(--text-1);
   font-size: 13.5px;
-  line-height: 1.8;
-}
-.lead b {
-  color: var(--text-0);
-  font-weight: 600;
+  line-height: 1.7;
 }
 
+/* ---- 分组 ---- */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
 .group-head {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  justify-content: space-between;
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--line);
-  margin-bottom: var(--sp-3);
 }
-.group-dot {
-  width: 3px;
-  height: 14px;
-  background: var(--amber);
-  border-radius: 1px;
+.group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-0);
+  font-family: inherit;
 }
-.group-title {
-  font-size: 14px;
-  margin-right: 6px;
-}
-.group-count {
-  margin-left: auto;
-  font-size: 12px;
+.caret {
+  display: inline-block;
   color: var(--text-2);
+  font-size: 14px;
+  transform: rotate(0deg);
+  transition: transform var(--dur) var(--ease);
+  width: 10px;
+}
+.caret.open {
+  transform: rotate(90deg);
+}
+.count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  background: var(--bg-3);
+  border-radius: 99px;
+  padding: 0 6px;
+  line-height: 18px;
 }
 
 .empty {
-  margin: 0 0 var(--sp-3);
+  margin: 0;
   padding: var(--sp-3) var(--sp-4);
   border: 1px dashed var(--line-strong);
   border-radius: var(--r-md);
@@ -448,65 +457,58 @@ onMounted(() => store.load())
   font-size: 12.5px;
 }
 
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: var(--sp-3);
-  align-items: start;
-}
-
+/* ---- 供应商卡片 ---- */
 .pcard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-4) var(--sp-5);
+  padding: 18px var(--sp-5);
   background: var(--bg-1);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
-  padding: var(--sp-3) var(--sp-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
+  transition: border-color var(--dur) var(--ease);
 }
-.pcard-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: var(--sp-2);
-}
-.pcard-name {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 13.5px;
-  min-width: 0;
-}
-.pcard-actions {
-  display: flex;
-  gap: 2px;
-  flex: none;
+.pcard:hover {
+  border-color: var(--line-strong);
 }
 
-.pcard-meta {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1.9fr) minmax(0, 0.9fr) minmax(0, 0.75fr);
-  gap: var(--sp-2) var(--sp-4);
-  margin: 0;
+.pcard-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
-.pcard-meta > div {
+.pcard-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pcard-name {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.pcard-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(0, 0.7fr);
+  gap: var(--sp-2) var(--sp-5);
+}
+.pf {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   min-width: 0;
 }
-.pcard-meta dt {
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-3);
+.pf-label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.4;
 }
-.pcard-meta dd {
-  margin: 1px 0 0;
-  font-size: 12px;
-  color: var(--text-1);
+.pf-value {
+  font-size: 12.5px;
+  color: var(--text-0);
   overflow-wrap: anywhere;
-}
-.mono {
-  font-family: var(--font-mono);
+  line-height: 1.5;
 }
 .ellipsis {
   overflow: hidden;
@@ -514,62 +516,51 @@ onMounted(() => store.load())
   white-space: nowrap;
 }
 
-.pcard-foot {
+.pcard-side {
   display: flex;
-  gap: var(--sp-2);
-  padding-top: var(--sp-2);
-  border-top: 1px solid var(--line);
+  align-items: flex-start;
+  gap: 4px;
 }
 
+/* ---- 测试结果 ---- */
 .result {
-  font-size: 12px;
-  line-height: 1.6;
-  border-radius: var(--r-sm);
-  padding: var(--sp-2) var(--sp-3);
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 .result.good {
-  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
-  background: color-mix(in srgb, var(--green) 8%, transparent);
+  background: var(--ok-soft);
   color: var(--text-1);
 }
 .result.bad {
-  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
-  background: color-mix(in srgb, var(--red) 8%, transparent);
-  color: var(--red);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
-.result-line {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.result-models {
-  display: flex;
+.result.wrap {
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
-}
-.more {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-3);
 }
 
 .alert {
   margin: 0;
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
-  background: color-mix(in srgb, var(--red) 8%, transparent);
-  border-radius: var(--r-sm);
-  color: var(--red);
+  padding: 8px 12px;
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--danger);
   font-size: 12.5px;
 }
 
-/* ---------- modal ---------- */
+/* ---- 弹层 ---- */
 .overlay {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, #000 62%, transparent);
-  backdrop-filter: blur(4px);
+  background: rgba(1, 4, 9, 0.6);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -577,19 +568,19 @@ onMounted(() => store.load())
   padding: var(--sp-5);
 }
 .modal {
-  width: min(720px, 100%);
+  width: min(680px, 100%);
   max-height: 88vh;
   overflow: auto;
   background: var(--bg-1);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-  animation: rise 0.2s ease both;
+  box-shadow: 0 16px 48px rgba(1, 4, 9, 0.6);
+  animation: fade-up 200ms var(--ease) both;
 }
 .modal-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
   padding: var(--sp-4) var(--sp-5);
   border-bottom: 1px solid var(--line);
   position: sticky;
@@ -598,7 +589,7 @@ onMounted(() => store.load())
   z-index: 2;
 }
 .modal-head h3 {
-  font-size: 15px;
+  font-size: 14.5px;
 }
 .modal-body {
   padding: var(--sp-5);
@@ -620,7 +611,11 @@ onMounted(() => store.load())
 .presets {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: 8px;
+}
+.presets-label {
+  font-size: 12.5px;
+  color: var(--text-1);
 }
 .preset-row {
   display: grid;
@@ -628,29 +623,31 @@ onMounted(() => store.load())
   gap: var(--sp-2);
 }
 .preset {
-  text-align: left;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: var(--sp-2) var(--sp-3);
+  text-align: left;
+  padding: 9px 11px;
   background: var(--bg-2);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   cursor: pointer;
   color: var(--text-1);
-  transition: border-color 0.15s, background 0.15s;
+  font-family: inherit;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 .preset:hover {
-  border-color: var(--amber);
+  border-color: var(--accent-border);
   background: var(--bg-3);
 }
-.preset strong {
+.preset-name {
   font-size: 12.5px;
+  font-weight: 500;
   color: var(--text-0);
 }
-.preset span {
-  font-size: 11px;
-  color: var(--text-3);
+.preset-note {
+  font-size: 11.5px;
+  color: var(--text-2);
   line-height: 1.5;
 }
 
@@ -663,46 +660,49 @@ onMounted(() => store.load())
   grid-column: 1 / -1;
 }
 
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-.seg-btn {
-  padding: 5px 12px;
-  background: var(--bg-0);
-  border: none;
-  color: var(--text-2);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.seg-btn + .seg-btn {
-  border-left: 1px solid var(--line-strong);
-}
-.seg-btn.on {
-  background: var(--amber);
-  color: var(--accent-contrast);
-  font-weight: 600;
-}
-
 .draft-test {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: 8px;
   align-items: flex-start;
+}
+
+/* 底部常驻的测试区：按钮 + 一行结果，不挤占正文滚动区 */
+.modal-foot {
+  align-items: center;
+}
+.foot-left {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+  min-width: 0;
+}
+.foot-msg {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42ch;
+}
+.foot-msg.good {
+  color: var(--ok);
+}
+.foot-msg.bad {
+  color: var(--danger);
 }
 
 .check {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: 8px;
   font-size: 12.5px;
   color: var(--text-1);
   cursor: pointer;
 }
 .check input {
-  accent-color: var(--amber);
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
 }
 </style>
