@@ -34,6 +34,7 @@ const PIPELINE = [
   { name: 'rerank', label: '精排' },
   { name: 'grade', label: '质量判定' },
   { name: 'answer', label: '组织答案' },
+  { name: 'tool', label: '工具调用' },
   { name: 'generate', label: '模型生成' },
 ] as const
 
@@ -54,6 +55,8 @@ const totalMs = computed(() =>
 
 function statusOf(name: string): 'pending' | 'running' | 'done' | 'skipped' | 'failed' {
   const list = byName.value.get(name)
+  // 工具调用不是必经步骤：这次没调工具就显示成「未使用」，而不是一直挂个灰点
+  if (name === 'tool' && (!list || !list.length)) return 'skipped'
   if (!list || !list.length) return 'pending'
   const last = list[list.length - 1]
   if (last.status === 'running') return 'running'
@@ -119,6 +122,9 @@ const dotClass = (name: string) => {
               {{ index + 1 }}.
             </span>
             {{ record.detail }}
+          </p>
+          <p v-if="item.name === 'tool' && !(byName.get('tool')?.length ?? 0)" class="trace-detail skip">
+            这次没有用到工具
           </p>
         </div>
       </li>
@@ -259,9 +265,14 @@ const dotClass = (name: string) => {
 .trace-detail.failed {
   color: var(--danger);
 }
-.trace-detail.skipped {
+.trace-detail.skipped,
+.trace-detail.skip {
   color: var(--text-3, var(--text-2));
   font-style: italic;
+}
+/* 工具结果可能比较长，允许在词间断行而不是撑破面板 */
+.trace-detail {
+  overflow-wrap: anywhere;
 }
 .trace-round {
   font-family: var(--font-mono);

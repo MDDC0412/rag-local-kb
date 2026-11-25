@@ -24,10 +24,11 @@ from app.core.errors import NOT_FOUND, AppError
 from app.db.models import Conversation, Message, PromptTemplate
 from app.db.session import SessionLocal
 from app.graph.build import build_graph
-from app.graph.nodes import build_messages, debug_to_dict, dumps, extract_citations
+from app.graph.nodes import build_messages, debug_to_dict, dumps, extract_citations, step
 from app.graph.state import RagState
 from app.providers.llm import build_chat_model
 from app.schemas.chat import ChatOptions
+from app.services import tools
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,12 @@ async def _touch(session: AsyncSession, conversation: Conversation, question: st
 
 
 async def _system_prompt(session: AsyncSession) -> str | None:
-    """取默认系统提示词模板（用户可在提示词库改）。"""
+    """取默认系统提示词模板，并注入当前时间与工具说明。
+
+    **时间是直接注入的，不让模型调工具问**：模型不知道"现在几点"不是能力缺陷，
+    而是没人告诉它。注入是一行字符串拼接，调工具则要多一轮 API 请求、多一次失败机会。
+    工具留给「模型真做不到」的事（见 services/tools.py）。
+    """
     row = (
         await session.execute(
             select(PromptTemplate)
@@ -126,11 +132,152 @@ async def _system_prompt(session: AsyncSession) -> str | None:
             .limit(1)
         )
     ).scalar_one_or_none()
-    return row.content if row and row.content.strip() else None
+    base = row.content if row and row.content.strip() else None
+    if not base:
+        return None
+
+    suffix = (
+        f"\n\n当前时间：{tools.current_time()}"
+        "\n如果问题涉及日期、时间、「今天/今年」等的推算，以这个时间为准。"
+    )
+    return base + suffix
 
 
 # --------------------------------------------------------------------------- #
 # 流式问答
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# 工具调用
+# --------------------------------------------------------------------------- #
+# 最多几轮工具调用。防止模型来回反复算同一个式子把请求拖死。
+MAX_TOOL_ROUNDS = 3
+
+
+async def _run_tool_rounds(
+    llm_spec,
+    messages: list[dict],
+    session: AsyncSession,
+) -> tuple[list[dict], dict, list[dict], list[dict], str]:
+    """让模型自己决定要不要调工具，执行后把结果回喂，返回 (新消息, 用量, 轨迹, 调用记录)。
+
+    流程（每一轮）：非流式请求 → 有 tool_calls 就逐个执行 → 把 assistant 的
+    tool_calls 与每条 tool 结果追加进 messages → 再问一轮；
+    直到模型不再要工具，或者轮数用完。
+
+    为什么不放在图里：工具调用是**生成阶段**的事（要用到已经组装好的上下文），
+    而图在 answer 节点就结束了。放这里也便于推 SSE 轨迹。
+    """
+    if not messages:
+        return messages, {}, [], [], ""
+
+    model = build_chat_model(llm_spec, streaming=False).bind_tools(tools.TOOL_SCHEMAS)
+    working = list(messages)
+    usage: dict = {}
+    steps: list[dict] = []
+    records: list[dict] = []
+
+    for round_index in range(1, MAX_TOOL_ROUNDS + 1):
+        started = time.perf_counter()
+        try:
+            response = await model.ainvoke(working)
+        except Exception as exc:
+            # 工具轮失败不该让整个问答失败：退回到「不调工具」直接生成
+            logger.warning("工具轮询失败，跳过工具直接生成：%s", exc)
+            steps.append(
+                step(
+                    "tool",
+                    "工具调用",
+                    "failed",
+                    f"跳过（{type(exc).__name__}），直接用模型自身能力回答",
+                    int((time.perf_counter() - started) * 1000),
+                )
+            )
+            return messages, usage, steps, records, ""
+
+        meta = getattr(response, "usage_metadata", None)
+        if meta:
+            usage.update(dict(meta))
+
+        calls = list(getattr(response, "tool_calls", None) or [])
+        if not calls:
+            # 模型没要工具，本轮的回答就是终稿，直接当答案交出去。
+            # **不要**再把它 append 进 messages 流式问一遍 ——
+            # 那等于让模型把同一段话重说一次：耗时翻倍，措辞还可能变。
+            content = response.content if isinstance(response.content, str) else ""
+            return working, usage, steps, records, content.strip()
+
+        # 本轮所有工具调用的结果，收集齐了再按协议一次性回喂
+        results: list[tuple[str, str, dict, str]] = []
+
+        for call in calls:
+            name = str(call.get("name", ""))
+            args = call.get("args") or {}
+            if not isinstance(args, dict):
+                args = {}
+
+            call_started = time.perf_counter()
+            try:
+                result = tools.run_tool(name, args)
+                ok = True
+            except AppError as exc:
+                result = f"工具执行失败：{exc.message}"
+                ok = False
+            except Exception as exc:
+                logger.exception("工具 %s 执行异常", name)
+                result = f"工具执行失败：{type(exc).__name__}"
+                ok = False
+
+            call_elapsed = int((time.perf_counter() - call_started) * 1000)
+            call_id = str(call.get("id") or f"call_{round_index}_{name}")
+            describe = tools.describe_call(name, args)
+            records.append(
+                {
+                    "name": name,
+                    "label": tools.tool_label(name),
+                    "args": args,
+                    "result": result,
+                    "ok": ok,
+                    "round": round_index,
+                }
+            )
+            steps.append(
+                step(
+                    "tool",
+                    "工具调用",
+                    "done" if ok else "failed",
+                    f"{describe} → {result[:80]}",
+                    call_elapsed,
+                )
+            )
+            results.append((call_id, name, args, result))
+
+        # 按 OpenAI 协议：一条 assistant 消息带本轮**全部** tool_calls，
+        # 再跟上每个 tool 的执行结果。拆成多条会直接被 API 拒绝。
+        working.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": call_name, "arguments": dumps(call_args)},
+                    }
+                    for call_id, call_name, call_args, _ in results
+                ],
+            }
+        )
+        for call_id, _, _, result in results:
+            working.append({"role": "tool", "tool_call_id": call_id, "content": result})
+
+        logger.info("工具轮 %s 完成，共调用 %s 次", round_index, len(calls))
+
+    # 轮数用尽模型还在要工具：强制收尾，让它基于已有工具结果直接作答
+    return working, usage, steps, records, ""
+
+
+# --------------------------------------------------------------------------- #
+# 流式问答入口
 # --------------------------------------------------------------------------- #
 def _sse(event: str, data: dict) -> str:
     """拼一条 SSE 消息。"""
@@ -317,29 +464,51 @@ async def _stream_impl(
     }
     yield _sse("step", generate_step)
 
-    stream_model = build_chat_model(llm_spec, streaming=True)
     answer_parts: list[str] = []
     usage: dict = {}
     gen_started = time.perf_counter()
     first_token_ms = 0
 
-    try:
-        async for event in stream_model.astream(messages):
-            text = event.content if isinstance(event.content, str) else str(event.content or "")
-            if text:
-                if not answer_parts:
-                    first_token_ms = int((time.perf_counter() - gen_started) * 1000)
-                answer_parts.append(text)
-                yield _sse("delta", {"text": text})
-            meta = getattr(event, "usage_metadata", None)
-            if meta:
-                usage = dict(meta)
-    except Exception as exc:
-        logger.exception("生成失败")
-        raise AppError(
-            "GENERATION_FAILED",
-            f"模型生成失败：{type(exc).__name__}，请检查对话模型是否可用",
-        ) from exc
+    # 6a) 工具阶段：先非流式问一轮，模型要调工具就先执行，结果回喂后再生成。
+    # 为什么不用流式做工具轮：流式下 tool_call 的增量拼装很脆，
+    # 而且工具调用绝不能漏进正文（用户会看到一堆 JSON）。
+    tool_records: list[dict] = []
+    messages, tool_usage, tool_steps, tool_records, final_text = await _run_tool_rounds(
+        llm_spec, messages, session
+    )
+    usage.update(tool_usage)
+    for record in tool_steps:
+        all_steps.append(record)
+        yield _sse("step", record)
+
+    # 6b) 正式流式生成
+    # 如果工具轮直接就把答案给全了（模型判定不需要工具），就直接推，
+    # 不再让模型重说一遍。否则走正常流式。
+    if final_text:
+        answer_parts.append(final_text)
+        yield _sse("delta", {"text": final_text})
+        gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
+        first_token_ms = 0
+    else:
+        stream_model = build_chat_model(llm_spec, streaming=True)
+        try:
+            async for event in stream_model.astream(messages):
+                text = event.content if isinstance(event.content, str) else str(event.content or "")
+                if text:
+                    if not answer_parts:
+                        first_token_ms = int((time.perf_counter() - gen_started) * 1000)
+                    answer_parts.append(text)
+                    yield _sse("delta", {"text": text})
+                meta = getattr(event, "usage_metadata", None)
+                if meta:
+                    usage.update(meta)
+        except Exception as exc:
+            logger.exception("生成失败")
+            raise AppError(
+                "GENERATION_FAILED",
+                f"模型生成失败：{type(exc).__name__}，请检查对话模型是否可用",
+            ) from exc
+        gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
 
     answer = "".join(answer_parts)
     gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
@@ -370,6 +539,7 @@ async def _stream_impl(
             {
                 **(debug_to_dict(debug) if debug else {}),
                 "steps": steps,
+                "tool_calls": tool_records,
                 "latency_ms": latency,
             }
         ),

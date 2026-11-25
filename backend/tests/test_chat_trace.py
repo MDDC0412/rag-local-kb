@@ -42,6 +42,7 @@ def test_generate_step_name_matches_frontend_pipeline() -> None:
         "rerank",
         "grade",
         "answer",
+        "tool",
         "generate",
     }
 
@@ -50,3 +51,38 @@ def test_generate_step_name_matches_frontend_pipeline() -> None:
         if f'"name": "{name}"' in source:
             assert name in pipeline_names
     assert '"name": "generate"' in source
+
+
+def test_tool_steps_are_persisted_like_generate() -> None:
+    """工具步骤也要并入 all_steps，否则历史会话里看不到调用过什么。"""
+    source = inspect.getsource(chat_service._stream_impl)
+
+    assert "all_steps.append(record)" in source, (
+        "工具调用记录必须并入 all_steps，否则重开历史会话就丢了"
+    )
+    assert "tool_calls" in source, "完整调用记录要存进 retrieval_json.tool_calls"
+
+
+def test_multiple_tool_calls_share_one_assistant_message() -> None:
+    """一轮里多个工具调用必须合并进**一条** assistant 消息。
+
+    这是 OpenAI function-calling 协议：一条 assistant 消息带全部 tool_calls，
+    后面跟每个 tool 结果。拆成多条会被 API 直接拒绝 ——
+    实测「现在几点 + 住 2 晚多少钱」会同时要两个工具，正好走这条路径。
+    """
+    source = inspect.getsource(chat_service._run_tool_rounds)
+
+    # 先把结果收集进列表，再一次性 append assistant
+    assert "results: list[tuple[str, str, dict, str]] = []" in source
+    assert "for call_id, call_name, call_args, _ in results" in source, (
+        "tool_calls 必须用列表推导一次性写入，不能每个 call 单独 append 一条 assistant"
+    )
+
+
+def test_tool_round_is_not_streamed_twice() -> None:
+    """工具轮若已给出正文，不能再流式重说一遍（耗时翻倍且措辞会变）。"""
+    source = inspect.getsource(chat_service._run_tool_rounds)
+
+    assert "return working, usage, steps, records, content.strip()" in source
+    # 工具轮绝不能用流式模型
+    assert "streaming=False" in source
