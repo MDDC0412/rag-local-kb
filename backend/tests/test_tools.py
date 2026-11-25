@@ -224,3 +224,76 @@ def test_decimal_not_leaked() -> None:
     result = calculate("1+1")
     assert isinstance(result, str)
     assert not isinstance(Decimal(result), type(None))
+
+
+# --------------------------------------------------------------------------- #
+# 算术需求判定（决定要不要逼模型调工具）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "question",
+    [
+        "一线城市住3晚，一共报多少钱？",
+        "住宿超标 30% 是多少",
+        "总共能报多少钱",
+        "合计一下金额",
+        "按 130% 折算后是多少",
+        "每晚 600 元，3 晚多少钱",
+    ],
+)
+def test_needs_arithmetic_detects_calc_questions(question: str) -> None:
+    """这些都是在问「算一下」，必须判为需要算术。"""
+    from app.services.chat import needs_arithmetic
+
+    assert needs_arithmetic(question, "一线城市每晚上限 600 元。") is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "差旅报销要提交哪些材料？",
+        "报销流程是怎样的？",
+        "谁能审批？",
+        "今天几号",  # 时间题，不该逼它调计算器
+    ],
+)
+def test_needs_arithmetic_ignores_non_calc(question: str) -> None:
+    """这些不需要算术，不要白逼模型调计算器。"""
+    from app.services.chat import needs_arithmetic
+
+    assert needs_arithmetic(question, "一线城市每晚上限 600 元。") is False
+
+
+def test_needs_arithmetic_requires_numbers_in_context() -> None:
+    """光有「多少」但上下文没有数字时不算，没东西可算。"""
+    from app.services.chat import needs_arithmetic
+
+    assert needs_arithmetic("这个多少钱", "本文档没有任何数字。") is False
+
+
+def test_forced_retry_is_implemented() -> None:
+    """必须有一条「模型偷懒不调工具 → 强制补一轮」的兜底。
+
+    实测：同一个提示词连跑 8 次，有 1 次模型就是不肯调（觉得 600×3 太简单），
+    而心算正是算错的来源。光靠提示词不够，代码里必须有兜底。
+    """
+    import inspect
+
+    from app.services import chat as chat_service
+
+    source = inspect.getsource(chat_service._run_tool_rounds)
+    assert "needs_calc" in source
+    assert "forced" in source
+    assert "必须修正" in source, "强制重试时要给出更明确的指令"
+
+
+def test_first_token_ms_not_zero_when_tool_round_answers() -> None:
+    """工具轮直接给出答案时，「首字」不能是 0ms（那不合理，用户会怀疑）。"""
+    import inspect
+
+    from app.services import chat as chat_service
+
+    source = inspect.getsource(chat_service._stream_impl)
+    # final_text 分支里必须真的计算耗时，而不是硬写 0
+    assert "first_token_ms = 0\n" not in source.split("if final_text:")[1].split("else:")[0], (
+        "final_text 分支不能把 first_token_ms 硬编码为 0"
+    )

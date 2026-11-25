@@ -152,17 +152,64 @@ async def _system_prompt(session: AsyncSession) -> str | None:
 # 最多几轮工具调用。防止模型来回反复算同一个式子把请求拖死。
 MAX_TOOL_ROUNDS = 3
 
+# 判断「这个问题需要算术」的线索词。
+# 为什么要由代码判断而不是全靠提示词：实测同一个提示词跑 8 次，模型有 1 次
+# 就是不肯调工具（它会觉得 600×3 太简单，自己心算更省事），而心算正是错的来源。
+# 所以当问题里出现算术信号、上下文里有数字，却一次工具都没调时，
+# 我们**强制补一轮**，并把「必须调用」这句话说得更死。
+_ARITHMETIC_HINTS = (
+    "算",
+    "多少",
+    "几",
+    "总共",
+    "一共",
+    "合计",
+    "总额",
+    "乘以",
+    "乘",
+    "除以",
+    "百分比",
+    "%",
+    "上限",
+    "折算",
+)
+
+# 「几」既可能问数量也可能问日期（今天几号）。时间类问题里它不构成算术需求，
+# 否则会把「今天几号」误判成算术题、白白逼模型调一遍计算器。
+_TIME_WORDS = ("今天", "明天", "昨天", "现在", "当前", "今年", "本月", "这周", "星期")
+
+
+def needs_arithmetic(question: str, context: str) -> bool:
+    """粗判这个问题是不是需要做算术。
+
+    条件：问题里有算术线索词，且参考资料里确实出现了数字。
+    误判的代价很小（多一次工具请求），漏判的代价是给出算错的数字。
+    所以宁可宽一点 —— 但时间类问题要排除，那不是算术。
+    """
+    text = question or ""
+    if any(word in text for word in _TIME_WORDS):
+        return False
+    if not any(hint in text for hint in _ARITHMETIC_HINTS):
+        return False
+    # 上下文里得有数字，否则没什么可算的
+    return any(char.isdigit() for char in (context or ""))
+
 
 async def _run_tool_rounds(
     llm_spec,
     messages: list[dict],
     session: AsyncSession,
+    *,
+    needs_calc: bool = False,
 ) -> tuple[list[dict], dict, list[dict], list[dict], str]:
     """让模型自己决定要不要调工具，执行后把结果回喂，返回 (新消息, 用量, 轨迹, 调用记录)。
 
     流程（每一轮）：非流式请求 → 有 tool_calls 就逐个执行 → 把 assistant 的
     tool_calls 与每条 tool 结果追加进 messages → 再问一轮；
     直到模型不再要工具，或者轮数用完。
+
+    ``needs_calc=True``（问题里有算术信号）时，如果模型第一轮就想直接作答，
+    **不接受**，补一句更强硬的指令再问一次。理由见 ``needs_arithmetic`` 的注释。
 
     为什么不放在图里：工具调用是**生成阶段**的事（要用到已经组装好的上下文），
     而图在 answer 节点就结束了。放这里也便于推 SSE 轨迹。
@@ -175,6 +222,7 @@ async def _run_tool_rounds(
     usage: dict = {}
     steps: list[dict] = []
     records: list[dict] = []
+    forced = False
 
     for round_index in range(1, MAX_TOOL_ROUNDS + 1):
         started = time.perf_counter()
@@ -200,6 +248,32 @@ async def _run_tool_rounds(
 
         calls = list(getattr(response, "tool_calls", None) or [])
         if not calls:
+            # 这道题需要算术，但模型一次工具都没调、想凭心算糊过去：
+            # 不接受，补一句硬指令逼它调（只逼一次，免得死循环）。
+            if needs_calc and not records and not forced:
+                forced = True
+                working.append({"role": "assistant", "content": response.content or ""})
+                working.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "【必须修正】这个问题涉及数字运算。请立刻调用 calculator 工具"
+                            "算出精确结果，不要自己心算 —— 你心算容易出错。"
+                            "调用后再组织最终答案。"
+                        ),
+                    }
+                )
+                steps.append(
+                    step(
+                        "tool",
+                        "工具调用",
+                        "running",
+                        "检测到算术需求但模型未调用工具，正在强制重试",
+                    )
+                )
+                logger.info("算术题未调工具，强制补一轮")
+                continue
+
             # 模型没要工具，本轮的回答就是终稿，直接当答案交出去。
             # **不要**再把它 append 进 messages 流式问一遍 ——
             # 那等于让模型把同一段话重说一次：耗时翻倍，措辞还可能变。
@@ -473,13 +547,18 @@ async def _stream_impl(
     # 为什么不用流式做工具轮：流式下 tool_call 的增量拼装很脆，
     # 而且工具调用绝不能漏进正文（用户会看到一堆 JSON）。
     tool_records: list[dict] = []
+    needs_calc = needs_arithmetic(question, final_state.get("context") or "")
     messages, tool_usage, tool_steps, tool_records, final_text = await _run_tool_rounds(
-        llm_spec, messages, session
+        llm_spec, messages, session, needs_calc=needs_calc
     )
     usage.update(tool_usage)
     for record in tool_steps:
         all_steps.append(record)
         yield _sse("step", record)
+
+    # 需要算术却没有工具结果：这是真正该警惕的情况，明确告诉用户
+    if needs_calc and not tool_records:
+        logger.warning("算术题最终仍未产生工具结果，答案里的数字可能不可靠")
 
     # 6b) 正式流式生成
     # 如果工具轮直接就把答案给全了（模型判定不需要工具），就直接推，
@@ -487,8 +566,9 @@ async def _stream_impl(
     if final_text:
         answer_parts.append(final_text)
         yield _sse("delta", {"text": final_text})
-        gen_elapsed = int((time.perf_counter() - gen_started) * 1000)
-        first_token_ms = 0
+        # 首字延迟：这段文字是工具轮那次**非流式**请求产出的，
+        # 所以「首字」= 那次请求拿到完整响应的耗时，而不是 0。
+        first_token_ms = int((time.perf_counter() - gen_started) * 1000)
     else:
         stream_model = build_chat_model(llm_spec, streaming=True)
         try:
