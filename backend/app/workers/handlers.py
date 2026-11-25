@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError
 from app.db.models import TaskJob
 from app.services import documents as doc_service
+from app.services import tagging as tagging_service
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,20 @@ async def _parse_target(session: AsyncSession, job: TaskJob, report) -> str:
     return f"已解析 {page_count} 段{suffix}"
 
 
+async def _tag_target(session: AsyncSession, job: TaskJob, report) -> str:
+    """给文档生成摘要、分类与标签。
+
+    这是**允许失败但不阻断主流程**的收尾步骤：入库已经成功了，
+    打标签失败只让这条任务失败，文档状态不受影响。
+    """
+    document_id = _require_target(job)
+    await report(10)
+    result = await tagging_service.tag_document(session, document_id)
+    await report(100)
+    suffix = f"；{'；'.join(result.warnings)}" if result.warnings else ""
+    return f"已生成{result.describe()}{suffix}"
+
+
 def _require_target(job: TaskJob) -> int:
     """任务必须有目标文档，否则是脏数据。"""
     if job.target_id is None:
@@ -98,6 +113,7 @@ HANDLERS = {
     "index": _index_target,
     "reindex": _reindex_target,
     "parse": _parse_target,
+    "tag": _tag_target,
 }
 
 

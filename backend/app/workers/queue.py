@@ -38,6 +38,7 @@ NOT_RETRYABLE_CODES = frozenset(
         "EMBEDDING_DIM_MISMATCH",
         "CHUNK_LOCKED",
         "PARSE_FAILED",
+        "NO_TEXT_FOR_TAGGING",
     }
 )
 
@@ -145,6 +146,21 @@ class JobQueue:
             async with SessionLocal() as session:
                 await job_service.mark_done(session, job_id)
             logger.info("任务 #%s 完成：%s", job_id, message)
+            await self._after_success(job)
+
+    async def _after_success(self, job: TaskJob) -> None:
+        """收尾：入库/重建成功后自动排一个打标签任务（DESIGN §6.1）。"""
+        if job.type not in ("index", "reindex") or job.target_id is None:
+            return
+        try:
+            async with SessionLocal() as session:
+                tag_job, created = await job_service.create_job(session, "tag", job.target_id)
+            if created:
+                await self._queue.put(tag_job.id)
+                logger.info("文档 #%s 入库完成，已排入打标签任务 #%s", job.target_id, tag_job.id)
+        except Exception:
+            # 打标签是增强功能，排不上队也不该影响入库结果
+            logger.exception("为文档 #%s 创建打标签任务失败", job.target_id)
 
     async def _run_handler(self, handler, job: TaskJob) -> str:
         """给处理器一个自己的 session 和一个写进度的回调。"""

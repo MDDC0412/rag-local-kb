@@ -15,6 +15,7 @@ from app.api import chunk_samples as chunk_samples_api
 from app.api import documents as documents_api
 from app.api import jobs as jobs_api
 from app.api import providers as providers_api
+from app.api import tags as tags_api
 from app.config import get_settings
 from app.core.errors import INTERNAL_ERROR, VALIDATION_FAILED, AppError
 from app.core.logging import setup_logging
@@ -122,3 +123,4 @@ app.include_router(documents_api.router)
 app.include_router(chunk_samples_api.router)
 app.include_router(chat_api.router)
 app.include_router(jobs_api.router)
+app.include_router(tags_api.router)
