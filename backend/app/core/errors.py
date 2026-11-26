@@ -6,7 +6,11 @@ from typing import Any
 
 
 class AppError(Exception):
-    """可预期的业务异常，会被全局处理器转成 {error:{code,message,detail}}。"""
+    """可预期的业务异常，会被全局处理器转成 {error:{code,message,detail}}。
+
+    ``retryable`` 只给内部调用方看（例如向量化要不要重试），不进响应体：
+    对用户来说"重试三次都失败"和"一次就失败"没有区别，说了反而占篇幅。
+    """
 
     def __init__(
         self,
@@ -15,12 +19,14 @@ class AppError(Exception):
         *,
         status_code: int = 400,
         detail: Any = None,
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
         self.detail = detail
+        self.retryable = retryable
 
 
 # ---- 错误码常量（前端按这些字符串分支）----

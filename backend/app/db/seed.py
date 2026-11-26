@@ -82,7 +82,9 @@ async def _seed_providers(session) -> None:
             settings.dev_embed_base_url,
             settings.dev_embed_api_key,
             settings.dev_embed_model,
-            {"batch_size": 32},
+            # batch_size 只是**上限**，实际还会按 token 预算动态切批。
+            # 别调大：服务端对单次请求的条数上限是硬限制，实测 26 条就 400。
+            {"batch_size": 20},
         ),
         (
             "rerank",

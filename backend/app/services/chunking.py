@@ -411,12 +411,14 @@ async def split_semantic(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = 0,
     threshold: float = DEFAULT_SEMANTIC_THRESHOLD,
-    batch_size: int = 32,
 ) -> ChunkResult:
     """语义切分：相邻句子的向量相似度低于阈值处断开。
 
     为什么值得做：递归切分只看字符，会把"讲完 A 话题、紧接着讲 B 话题"的
     两段合成一块，检索时这块对两个话题都"半相关"，得分都不高。
+
+    ``embed_fn`` 收一批文本、返回对应顺序的向量。**分批不是这个函数的职责**：
+    由 ``EmbeddingClient`` 按条数与 token 预算统一切批（见 providers/embed.py）。
     """
     result = ChunkResult(strategy="semantic", chunk_size=chunk_size, overlap=overlap)
     if not pages:
@@ -431,11 +433,10 @@ async def split_semantic(
             pieces.extend(_pieces_recursive([(text, page_no)], chunk_size, overlap))
             continue
 
-        # 批量向量化（按批，避免一次请求过大）
-        vectors: list[list[float]] = []
-        for start in range(0, len(sentences), batch_size):
-            batch = sentences[start : start + batch_size]
-            vectors.extend(await embed_fn(batch))
+        # 一次把整页句子交给 embed_fn：**分批由 EmbeddingClient 自己按
+        # 条数 + token 预算做**，这里再切一层会绕过它的动态切批，
+        # 结果就是"外面按 32 条切、里面按 20 条切"，外面那层纯属添乱。
+        vectors = await embed_fn(sentences)
 
         # 相邻相似度
         blocks: list[str] = []

@@ -65,7 +65,12 @@ class ProviderSpec:
 
 
 def _human_error(exc: Exception, spec: ProviderSpec) -> AppError:
-    """把底层异常翻译成人话，绝不透传原始堆栈。"""
+    """把底层异常翻译成人话，绝不透传原始堆栈。
+
+    ``status_code=400`` 在本项目里是"调用方问题"的通用标记（前端照常展示 message），
+    这里额外用 ``retryable`` 区分**重试有没有意义**：向量化一次要几十秒，
+    对着一个不会变的 400 错误重试三遍纯粹是浪费。
+    """
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in (401, 403):
@@ -75,16 +80,20 @@ def _human_error(exc: Exception, spec: ProviderSpec) -> AppError:
                 status_code=400,
             )
         snippet = exc.response.text[:200] if exc.response.text else ""
-        return AppError(
+        error = AppError(
             PROVIDER_UNAVAILABLE,
             f"{spec.name} 返回 HTTP {code}：{snippet or '无响应体'}",
             status_code=400,
         )
+        # 400/422 是参数类错误：同一批内容重发结果不会变，重试无意义
+        error.retryable = code >= 500 or code == 429
+        return error
     if isinstance(exc, httpx.TimeoutException):
         return AppError(
             PROVIDER_UNAVAILABLE,
             f"{spec.name} 请求超时：网络不通或服务无响应，稍后重试",
             status_code=400,
+            retryable=True,
         )
     if isinstance(exc, httpx.ConnectError):
         # ConnectError 的 str() 经常是空串，真正原因在 __cause__ 里，逐层挖出来
@@ -98,6 +107,7 @@ def _human_error(exc: Exception, spec: ProviderSpec) -> AppError:
             f"{spec.name} 连接失败：{spec.origin} 不可达"
             + (f"（{reason}）" if reason else "（网络不通或被拦截）"),
             status_code=400,
+            retryable=True,
         )
     return AppError(
         PROVIDER_UNAVAILABLE,
