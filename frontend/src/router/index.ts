@@ -40,7 +40,7 @@ const routes = [
   {
     path: '/lab',
     name: 'lab',
-    component: () => import('@/views/PlaceholderView.vue'),
+    component: () => import('@/views/LabView.vue'),
     meta: { title: 'RAG 实验室', index: '05', milestone: 'M4' },
   },
   {
