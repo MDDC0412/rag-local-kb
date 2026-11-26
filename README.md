@@ -175,6 +175,18 @@ Windows 注册表里的系统代理可能是坏的。本项目所有 HTTP 客户
 当问题里有算术信号、模型却没调工具时，**代码会强制补一轮**逼它调。
 所以你会看到轨迹面板里出现「工具调用」这一步。
 
+### 点「✨优化」提示「优化服务暂时不可用」
+
+两种原因，都不是你操作错了：
+
+1. **已修的老 bug**：网关要求请求里必须带一条 system 消息，而早期代码直接
+   `ainvoke("一段话")`，只会发 user 一条 → 网关一律回 400。现在统一由
+   `providers/llm.py::invoke_prompt` 包成 system + user（`tests/test_llm_invoke.py` 守着）。
+2. **网关成片抖动**：这个网关会间歇性地连续返回 `400 upstream_error`，几分钟后自己恢复。
+   代码会短重试 1–2 次，仍失败就按设计退回原问题并写明原因 —— 等几分钟再点一次即可。
+
+想确认是哪种：看后端日志里有没有 `400 ... upstream_error`。
+
 ### PDF 上传后没有内容
 
 可能是**扫描件**（图片版 PDF）。本项目**不做 OCR**，
@@ -241,7 +253,7 @@ scripts/      dev.ps1 reset.ps1 migrate.py migrate_20261126_system_prompt_tools.
 cd backend
 ruff check .
 ruff format --check .
-pytest            # 不要加 -q：pyproject 里已有 -q，再加会吞掉「428 passed」这行汇总
+pytest            # 不要加 -q：pyproject 里已有 -q，再加会吞掉「432 passed」这行汇总
 
 cd ../frontend
 pnpm build        # 含 vue-tsc 类型检查
@@ -262,7 +274,7 @@ pnpm build        # 含 vue-tsc 类型检查
 
 当前质量门（本轮实测）：
 
-- `pytest` **428 passed**（20 个测试文件；别再加 `-q`，`pyproject.toml` 里已有 `-q`，再加会吞掉汇总行）
+- `pytest` **432 passed**（20 个测试文件；别再加 `-q`，`pyproject.toml` 里已有 `-q`，再加会吞掉汇总行）
 - `ruff check .` 干净、`ruff format --check .` 83 files already formatted
 - `pnpm build`（含 `vue-tsc` 类型检查）通过
 - 后端共 **47 条**路由（`/docs` 里可逐条试）
