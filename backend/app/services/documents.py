@@ -18,7 +18,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -30,7 +30,14 @@ from app.core.errors import (
     AppError,
     message_for,
 )
-from app.db.models import Chunk, Document, DocumentPage, KnowledgeBase, ProviderConfig
+from app.db.models import (
+    Chunk,
+    Document,
+    DocumentPage,
+    DocumentTag,
+    KnowledgeBase,
+    ProviderConfig,
+)
 from app.providers.embed import EmbeddingClient
 from app.providers.registry import to_spec
 from app.services import indexing
@@ -654,14 +661,148 @@ async def reset_document_index(session: AsyncSession, document_id: int) -> int:
     return result.rowcount or 0
 
 
+# 文档列表的排序方式。key 是前端传的值，value 是 SQL 排序表达式。
+# 一律追加 created_at desc 作为兜底：排序键相同的行（如同一秒上传）也要有稳定顺序，
+# 否则翻页时同一篇文档可能出现在两页、或者直接被跳过。
+SORT_ORDERS = {
+    "recent": (Document.created_at.desc(),),
+    "oldest": (Document.created_at.asc(),),
+    "name": (Document.filename.asc(),),
+    "size": (Document.size.desc(),),
+    "chars": (Document.char_count.desc(),),
+}
+
+DEFAULT_SORT = "recent"
+MAX_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 20
+
+
+def escape_like(value: str) -> str:
+    """转义 LIKE 的通配符，让用户输入按字面匹配。
+
+    ⚠️ SQLAlchemy **不会**自动转义 `%` 和 `_` —— 这是实测抓到的：
+    搜 `a_b` 会同时命中 `a_b.md` 和 `axb.md`，搜 `100%` 能命中一堆无关文档。
+
+    转义顺序必须是反斜杠先转，否则会把后面刚加的反斜杠再转一遍。
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_filter(keyword: str):
+    """关键词过滤条件：匹配文件名或摘要。
+
+    用 ``ilike`` 而不是 ``like``：英文文件名要能大小写不敏感地搜到。
+    配合 ``escape="\\"`` 与 ``escape_like``，用户输入的 ``%`` / ``_``
+    按普通字符处理，不会被当成通配符展开。
+    """
+    pattern = f"%{escape_like(keyword.strip())}%"
+    return or_(
+        Document.filename.ilike(pattern, escape="\\"),
+        Document.summary.ilike(pattern, escape="\\"),
+    )
+
+
 async def list_documents(
-    session: AsyncSession, kb_id: int, *, status: str | None = None
-) -> list[Document]:
-    """列出知识库下的文档。"""
-    stmt = select(Document).where(Document.kb_id == kb_id).order_by(Document.created_at.desc())
+    session: AsyncSession,
+    kb_id: int,
+    *,
+    status: str | None = None,
+    keyword: str | None = None,
+    category_id: int | None = None,
+    tag_id: int | None = None,
+    sort: str = DEFAULT_SORT,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> tuple[list[Document], int]:
+    """按条件查文档，返回 (当前页, 命中总数)。
+
+    分页必须在数据库里做（``limit/offset``），不能先全查出来再切片：
+    文档上百篇时全量查询会把每篇的摘要和标签一起拉进内存，
+    而这正是这一页要解决的"翻不动"问题。
+    """
+    conditions = [Document.kb_id == kb_id]
     if status:
-        stmt = stmt.where(Document.status == status)
-    return list((await session.execute(stmt)).scalars().all())
+        conditions.append(Document.status == status)
+    if category_id is not None:
+        conditions.append(Document.category_id == category_id)
+    if keyword and keyword.strip():
+        conditions.append(_search_filter(keyword))
+    if tag_id is not None:
+        # 用子查询而不是 join：join 会让同一篇文档因多个标签出现多行，
+        # 计数与分页都会算错。exists 只判断"有没有"，不复制行。
+        conditions.append(
+            exists().where(DocumentTag.document_id == Document.id, DocumentTag.tag_id == tag_id)
+        )
+
+    total = (
+        await session.execute(select(func.count()).select_from(Document).where(*conditions))
+    ).scalar_one()
+
+    order = (*SORT_ORDERS.get(sort, SORT_ORDERS[DEFAULT_SORT]), Document.id.desc())
+    size = max(1, min(page_size, MAX_PAGE_SIZE))
+    offset = (max(1, page) - 1) * size
+
+    rows = (
+        (
+            await session.execute(
+                select(Document).where(*conditions).order_by(*order).limit(size).offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows), int(total)
+
+
+async def document_facets(session: AsyncSession, kb_id: int) -> dict:
+    """筛选器候选：有哪些状态（带数量）、分类、标签。
+
+    为什么要带数量：用户想的是"哪些文档还没入库"，直接看到 ``解析完成 12``
+    比先选一遍再发现是 0 篇要好。数量也让"搜索 + 筛选"的组合结果可预期。
+    """
+    from app.db.models import Category, Tag
+
+    status_rows = (
+        await session.execute(
+            select(Document.status, func.count())
+            .where(Document.kb_id == kb_id)
+            .group_by(Document.status)
+        )
+    ).all()
+    status_counts = {str(row[0]): int(row[1]) for row in status_rows}
+
+    category_rows = (
+        await session.execute(
+            select(Category.id, Category.name, func.count(Document.id))
+            .join(Document, Document.category_id == Category.id)
+            .where(Document.kb_id == kb_id)
+            .group_by(Category.id, Category.name)
+            .order_by(func.count(Document.id).desc())
+        )
+    ).all()
+
+    tag_rows = (
+        await session.execute(
+            select(Tag.id, Tag.name, func.count(DocumentTag.document_id))
+            .join(DocumentTag, DocumentTag.tag_id == Tag.id)
+            .join(Document, Document.id == DocumentTag.document_id)
+            .where(Document.kb_id == kb_id)
+            .group_by(Tag.id, Tag.name)
+            .order_by(func.count(DocumentTag.document_id).desc(), Tag.name.asc())
+        )
+    ).all()
+
+    return {
+        "statuses": [
+            {"value": value, "count": count} for value, count in sorted(status_counts.items())
+        ],
+        "categories": [
+            {"id": int(row[0]), "name": str(row[1]), "count": int(row[2])} for row in category_rows
+        ],
+        "tags": [
+            {"id": int(row[0]), "name": str(row[1]), "count": int(row[2])} for row in tag_rows
+        ],
+    }
 
 
 async def get_document(session: AsyncSession, document_id: int) -> Document:

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  SORT_OPTIONS,
   STATUS_LABEL,
   STATUS_TONE,
   formatSize,
@@ -26,6 +27,60 @@ const stats = computed(() => [
   { label: '已入库分块', value: store.stats.indexed_chunks },
   { label: '向量', value: store.stats.vectors },
 ])
+
+// ------------------------------------------------------------------------- //
+// 搜索：输入时防抖 300ms，避免每敲一个字就打一次接口
+// ------------------------------------------------------------------------- //
+let searchTimer: number | null = null
+
+watch(
+  () => store.query.q,
+  () => {
+    if (searchTimer !== null) window.clearTimeout(searchTimer)
+    searchTimer = window.setTimeout(() => store.reload(), 300)
+  },
+)
+
+// 下拉类条件改变立刻查，不需要防抖
+watch(
+  () => [store.query.status, store.query.categoryId, store.query.tagId, store.query.sort],
+  () => store.reload(),
+)
+
+onUnmounted(() => {
+  if (searchTimer !== null) window.clearTimeout(searchTimer)
+})
+
+/** 页码列表：页数多时只显示当前页附近，避免一排几十个按钮。 */
+const pageNumbers = computed(() => {
+  const total = store.totalPages
+  const current = store.query.page
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+
+  const pages = new Set([1, total, current])
+  for (let offset = 1; offset <= 1; offset += 1) {
+    if (current - offset > 0) pages.add(current - offset)
+    if (current + offset <= total) pages.add(current + offset)
+  }
+  return [...pages].sort((a, b) => a - b)
+})
+
+/** 页码之间要画省略号的位置 */
+function showGap(index: number, list: number[]): boolean {
+  return index > 0 && list[index] - list[index - 1] > 1
+}
+
+const rangeText = computed(() => {
+  if (!store.total) return '没有匹配的文档'
+  const start = (store.query.page - 1) * store.query.pageSize + 1
+  const end = Math.min(store.query.page * store.query.pageSize, store.total)
+  return `第 ${start}–${end} 条，共 ${store.total} 条`
+})
+
+/** 状态值 → 中文标签。后端返回的 status 是普通字符串，这里做一次收窄。 */
+function statusLabel(value: string): string {
+  return (STATUS_LABEL as Record<string, string>)[value] ?? value
+}
 
 function pickFiles() {
   fileInput.value?.click()
@@ -158,12 +213,98 @@ onMounted(() => store.load())
     <section class="list-wrap">
       <div class="list-head">
         <span class="section-title">文档</span>
-        <button class="btn btn-sm btn-quiet" :disabled="store.loading" @click="store.load()">
+        <span class="range-text">{{ rangeText }}</span>
+        <button
+          class="btn btn-sm btn-quiet"
+          :disabled="store.loading"
+          @click="store.load()"
+        >
           {{ store.loading ? '刷新中' : '刷新' }}
         </button>
       </div>
 
-      <p v-if="!store.items.length" class="empty">还没有文档。先上传一份，看看解析和分块的效果。</p>
+      <!-- 搜索与筛选 -->
+      <div class="filters">
+        <div class="search-box">
+          <span class="search-icon">⌕</span>
+          <input
+            v-model="store.query.q"
+            type="search"
+            class="search-input"
+            placeholder="搜索文件名或摘要…"
+            @keydown.esc="store.query.q = ''"
+          />
+          <button
+            v-if="store.query.q"
+            class="search-clear"
+            title="清空"
+            @click="store.query.q = ''"
+          >
+            ×
+          </button>
+        </div>
+
+        <select v-model="store.query.status" class="filter-select">
+          <option value="">全部状态</option>
+          <option v-for="item in store.facets.statuses" :key="item.value" :value="item.value">
+            {{ statusLabel(item.value) }}（{{ item.count }}）
+          </option>
+        </select>
+
+        <select
+          v-if="store.facets.categories.length"
+          v-model="store.query.categoryId"
+          class="filter-select"
+        >
+          <option :value="null">全部分类</option>
+          <option v-for="item in store.facets.categories" :key="item.id" :value="item.id">
+            {{ item.name }}（{{ item.count }}）
+          </option>
+        </select>
+
+        <select v-model="store.query.sort" class="filter-select">
+          <option v-for="item in SORT_OPTIONS" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
+
+        <button v-if="store.hasFilters" class="btn btn-sm btn-quiet" @click="store.clearFilters()">
+          清除筛选
+        </button>
+      </div>
+
+      <!-- 标签筛选：标签通常很多，用横向可滚动的 chip 行 -->
+      <div v-if="store.facets.tags.length" class="tag-filter">
+        <button
+          class="tag-chip"
+          :class="{ active: store.query.tagId === null }"
+          @click="store.query.tagId = null"
+        >
+          全部
+        </button>
+        <button
+          v-for="item in store.facets.tags"
+          :key="item.id"
+          class="tag-chip"
+          :class="{ active: store.query.tagId === item.id }"
+          @click="store.query.tagId = store.query.tagId === item.id ? null : item.id"
+        >
+          {{ item.name }}<span class="tag-count">{{ item.count }}</span>
+        </button>
+      </div>
+
+      <p v-if="store.loading && !store.items.length" class="empty">正在查询…</p>
+
+      <p v-else-if="!store.items.length && store.hasFilters" class="empty">
+        没有匹配「{{ store.query.q || '当前筛选条件' }}」的文档。
+        <button class="btn btn-sm btn-quiet empty-action" @click="store.clearFilters()">
+          清除筛选
+        </button>
+      </p>
+
+      <p v-else-if="!store.items.length" class="empty">
+        还没有文档。先上传一份，看看解析和分块的效果。
+      </p>
 
       <div v-for="doc in store.items" :key="doc.id" class="row" @click="openDetail(doc)">
         <div class="row-main">
@@ -201,6 +342,52 @@ onMounted(() => store.load())
           <button class="btn btn-sm btn-quiet btn-danger" @click="removeDoc(doc)">删除</button>
         </div>
       </div>
+
+      <!-- 分页 -->
+      <nav v-if="store.total > 0" class="pager">
+        <div class="pager-pages">
+          <button
+            class="page-btn"
+            :disabled="store.query.page <= 1"
+            title="上一页"
+            @click="store.goto(store.query.page - 1)"
+          >
+            ‹
+          </button>
+          <template v-for="(num, index) in pageNumbers" :key="num">
+            <span v-if="showGap(index, pageNumbers)" class="page-gap">…</span>
+            <button
+              class="page-btn"
+              :class="{ active: num === store.query.page }"
+              @click="store.goto(num)"
+            >
+              {{ num }}
+            </button>
+          </template>
+          <button
+            class="page-btn"
+            :disabled="store.query.page >= store.totalPages"
+            title="下一页"
+            @click="store.goto(store.query.page + 1)"
+          >
+            ›
+          </button>
+        </div>
+
+        <label class="pager-size">
+          每页
+          <select
+            :value="store.query.pageSize"
+            @change="store.setPageSize(Number(($event.target as HTMLSelectElement).value))"
+          >
+            <option :value="10">10</option>
+            <option :value="20">20</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+          </select>
+          条
+        </label>
+      </nav>
     </section>
   </div>
 </template>
@@ -303,9 +490,216 @@ onMounted(() => store.load())
 .list-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--sp-2);
   padding-bottom: var(--sp-2);
   border-bottom: 1px solid var(--line);
+}
+.range-text {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+
+/* 搜索与筛选 */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 240px;
+  min-width: 200px;
+  height: 32px;
+  padding: 0 9px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  transition: border-color var(--dur) var(--ease);
+}
+.search-box:focus-within {
+  border-color: var(--accent-border);
+}
+.search-icon {
+  font-size: 14px;
+  color: var(--text-2);
+  line-height: 1;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-0);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.search-input::placeholder {
+  color: var(--text-2);
+}
+/* Safari/webkit 的 search 取消按钮会与本组件的 × 重复 */
+.search-input::-webkit-search-cancel-button {
+  display: none;
+}
+.search-clear {
+  flex: none;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.search-clear:hover {
+  color: var(--text-0);
+}
+
+.filter-select {
+  flex: none;
+  /* 全局 select 是 width:100%（表单里要撑满），筛选条上必须显式收回 */
+  width: auto;
+  max-width: 180px;
+  height: 32px;
+  padding: 0 7px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.filter-select:hover {
+  border-color: var(--line-strong);
+}
+.filter-select:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+/* 标签 chip 行 */
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-bottom: var(--sp-2);
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.tag-chip:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+.tag-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.tag-count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.empty-action {
+  margin-left: 6px;
+}
+
+/* 分页 */
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-top: var(--sp-3);
+  margin-top: var(--sp-1);
+  border-top: 1px solid var(--line);
+}
+
+.pager-pages {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.page-btn {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.page-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--line-strong);
+  color: var(--text-0);
+}
+.page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.page-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  cursor: default;
+}
+
+.page-gap {
+  padding: 0 2px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.pager-size {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.pager-size select {
+  width: auto;
+  height: 26px;
+  padding: 0 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  cursor: pointer;
 }
 
 .empty {

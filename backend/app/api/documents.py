@@ -18,6 +18,8 @@ from app.schemas.document import (
     ChunkPreviewResponse,
     ChunkUpdateRequest,
     DocumentDetail,
+    DocumentFacets,
+    DocumentListOut,
     DocumentOut,
     FilterPreviewRequest,
     FilterPreviewResponse,
@@ -140,14 +142,34 @@ async def reparse_document(
 # --------------------------------------------------------------------------- #
 # 列表与详情
 # --------------------------------------------------------------------------- #
-@router.get("/kbs/{kb_id}/documents", response_model=list[DocumentOut])
+@router.get("/kbs/{kb_id}/documents", response_model=DocumentListOut)
 async def list_documents(
     kb_id: int,
-    status: str | None = Query(default=None),
+    status: str | None = Query(default=None, description="按状态过滤"),
+    q: str | None = Query(default=None, description="关键词，匹配文件名或摘要"),
+    category_id: int | None = Query(default=None),
+    tag_id: int | None = Query(default=None),
+    sort: str = Query(default="recent", description="recent/oldest/name/size/chars"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
-) -> list[DocumentOut]:
-    """列出文档（含标签与分类，批量查询避免 N+1）。"""
-    rows = await doc_service.list_documents(session, kb_id, status=status)
+) -> DocumentListOut:
+    """分页 + 搜索 + 筛选的文档列表。
+
+    分页在数据库里做（limit/offset），不是查出来再切 ——
+    文档上百篇时全量查询会把摘要和标签一起拉进内存，正是这一页要解决的问题。
+    """
+    rows, total = await doc_service.list_documents(
+        session,
+        kb_id,
+        status=status,
+        keyword=q,
+        category_id=category_id,
+        tag_id=tag_id,
+        sort=sort,
+        page=page,
+        page_size=page_size,
+    )
     items = [DocumentOut.model_validate(row) for row in rows]
 
     tag_map = await tagging_service.document_tag_map(session, [row.id for row in rows])
@@ -158,7 +180,16 @@ async def list_documents(
     for item, row in zip(items, rows, strict=True):
         item.tags = tag_map.get(row.id, [])
         item.category = category_names.get(row.category_id) if row.category_id else None
-    return items
+    return DocumentListOut(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.get("/kbs/{kb_id}/document-facets", response_model=DocumentFacets)
+async def document_facets(
+    kb_id: int, session: AsyncSession = Depends(get_session)
+) -> DocumentFacets:
+    """筛选器候选值：状态（带数量）、分类、标签。"""
+    data = await doc_service.document_facets(session, kb_id)
+    return DocumentFacets(**data)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetail)

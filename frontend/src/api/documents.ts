@@ -167,6 +167,55 @@ export interface StrategySampleDetail extends StrategySample {
   note?: string
 }
 
+export interface DocumentList {
+  items: DocumentItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface FacetCount {
+  value?: string
+  id?: number
+  name?: string
+  count: number
+}
+
+export interface DocumentFacets {
+  statuses: Array<{ value: string; count: number }>
+  categories: Array<{ id: number; name: string; count: number }>
+  tags: Array<{ id: number; name: string; count: number }>
+}
+
+/** 列表查询条件。所有字段都可选，不传就是默认视图。 */
+export interface DocumentQuery {
+  q?: string
+  status?: string
+  categoryId?: number | null
+  tagId?: number | null
+  sort?: 'recent' | 'oldest' | 'name' | 'size' | 'chars'
+  page?: number
+  pageSize?: number
+}
+
+export const SORT_OPTIONS = [
+  { value: 'recent', label: '最近上传' },
+  { value: 'oldest', label: '最早上传' },
+  { value: 'name', label: '文件名' },
+  { value: 'size', label: '文件大小' },
+  { value: 'chars', label: '字数' },
+] as const
+
+function buildQuery(base: string, params: Record<string, unknown>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue
+    search.set(key, String(value))
+  }
+  const suffix = search.toString()
+  return suffix ? `${base}?${suffix}` : base
+}
+
 export const docsApi = {
   strategies: () => http.get<{ items: StrategyMeta[] }>('/chunk-strategies'),
 
@@ -179,8 +228,22 @@ export const docsApi = {
 
   stats: (kbId = 1) => http.get<KbStats>(`/kbs/${kbId}/stats`),
 
-  list: (kbId = 1, status?: string) =>
-    http.get<DocumentItem[]>(`/kbs/${kbId}/documents${status ? `?status=${status}` : ''}`),
+  /** 分页 + 搜索 + 筛选的文档列表（契约：{items,total,page,page_size}）。 */
+  list: (kbId = 1, query: DocumentQuery = {}) =>
+    http.get<DocumentList>(
+      buildQuery(`/kbs/${kbId}/documents`, {
+        q: query.q?.trim(),
+        status: query.status,
+        category_id: query.categoryId,
+        tag_id: query.tagId,
+        sort: query.sort,
+        page: query.page,
+        page_size: query.pageSize,
+      }),
+    ),
+
+  /** 筛选器候选：有哪些状态/分类/标签，各多少篇。 */
+  facets: (kbId = 1) => http.get<DocumentFacets>(`/kbs/${kbId}/document-facets`),
 
   detail: (id: number) => http.get<DocumentDetail>(`/documents/${id}`),
 

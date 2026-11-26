@@ -52,6 +52,42 @@ class UploadResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DocumentListOut(BaseModel):
+    """分页的文档列表（契约见 AGENTS.md §8.1）。
+
+    ``total`` 是**过滤后**的命中总数，不是库里的文档总数 ——
+    前端靠它算总页数，用错了会出现"搜索后还有 20 页"的荒唐结果。
+    """
+
+    items: list[DocumentOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class StatusFacet(BaseModel):
+    """状态候选及其文档数。"""
+
+    value: str
+    count: int
+
+
+class NamedFacet(BaseModel):
+    """分类/标签候选及其文档数。"""
+
+    id: int
+    name: str
+    count: int
+
+
+class DocumentFacets(BaseModel):
+    """筛选器候选值：让前端不用自己猜有哪些状态/分类/标签可选。"""
+
+    statuses: list[StatusFacet] = Field(default_factory=list)
+    categories: list[NamedFacet] = Field(default_factory=list)
+    tags: list[NamedFacet] = Field(default_factory=list)
+
+
 class ParseRequest(BaseModel):
     """解析参数。mode=llm 时用大模型清洗结构。"""
 
