@@ -217,6 +217,125 @@ async def load_pages(session: AsyncSession, document_id: int) -> list[tuple[str,
 
 
 # --------------------------------------------------------------------------- #
+# 过滤（分块之前的清洗）
+# --------------------------------------------------------------------------- #
+async def build_filter_preview(
+    session: AsyncSession,
+    document_id: int,
+    *,
+    filter_raw: bool = True,
+    filter_ai: bool = False,
+    llm_provider_id: int | None = None,
+) -> dict:
+    """只看过滤效果：留下多少、删了哪些行、为什么删。
+
+    这是给用户"先看一眼再决定要不要用"的地方，所以**不落库、不切分**。
+    智能过滤最多调 1 次模型，且失败时回报警告而不是报错。
+    """
+    from app.services import filtering
+
+    pages = await load_pages(session, document_id)
+    raw_texts = [(page_no, text) for text, page_no in pages]
+    raw_chars = sum(len(text) for _, text in raw_texts)
+
+    warnings: list[str] = []
+    if not filter_raw and not filter_ai:
+        result = filtering.FilterResult(
+            pages=raw_texts, mode="none", warnings=["没有启用任何过滤，原文将直接进入分块。"]
+        )
+    elif filter_ai:
+        drop, _removals, ai_warnings = await ai_filter_lines(
+            session, raw_texts, provider_id=llm_provider_id
+        )
+        warnings.extend(ai_warnings)
+        result = filtering.filter_with_ai_lines(raw_texts, drop)
+        warnings.extend(result.warnings)
+    else:
+        result = filtering.filter_raw(raw_texts)
+        warnings.extend(result.warnings)
+
+    return {
+        "document_id": document_id,
+        "mode": result.mode,
+        "raw_chars": raw_chars,
+        "kept_chars": result.kept_chars,
+        "removed_count": result.removed_count,
+        "removals": [
+            {
+                "page_no": item.page_no,
+                "line_no": item.line_no,
+                "text": item.text,
+                "reason": item.reason,
+            }
+            for item in result.removals[:200]  # 只回前 200 条，避免超长文档把响应撑爆
+        ],
+        "warnings": warnings,
+        "pages": [{"page_no": page_no, "text": text} for page_no, text in result.pages],
+    }
+
+
+async def ai_filter_lines(
+    session: AsyncSession, pages: list[tuple[int, str]], *, provider_id: int | None = None
+) -> tuple[set[tuple[int, int]], list, list[str]]:
+    """调一次模型，拿到"该删哪些行"的行号集合。
+
+    单独抽出来是因为**两处都要用**：过滤预览、以及带过滤的分块。
+    智能过滤失败不抛异常（可选增强），只回警告。
+    """
+    from app.services import filtering
+    from app.services.llm_parse import _get_llm_spec, _load_template
+
+    try:
+        spec = await _get_llm_spec(session, provider_id)
+        from app.providers.llm import build_chat_model
+
+        model = build_chat_model(spec, temperature=0.0, streaming=False)
+        template = await _load_template(session, "filter", filtering.ai_prompt_fallback())
+    except Exception as exc:
+        logger.warning("智能过滤准备失败，跳过：%s", exc)
+        return set(), [], [f"智能过滤不可用（{type(exc).__name__}），已只做原文过滤。"]
+
+    return await filtering.ai_filter(pages, chat_model=model, prompt_template=template)
+
+
+async def filtered_pages(
+    session: AsyncSession,
+    document_id: int,
+    *,
+    filter_raw: bool,
+    filter_ai: bool,
+) -> tuple[list[tuple[str, int]], list[str]]:
+    """按开关给出"过滤后的分页文本"，供分块使用。
+
+    注意返回值是 ``[(text, page_no)]``（与 split_local 的入参顺序一致），
+    而 filter 模块内部用 ``[(page_no, text)]``（便于按页号报删除行号）。
+    """
+    from app.services import filtering
+
+    pages = await load_pages(session, document_id)
+    if not filter_raw and not filter_ai:
+        return pages, []
+
+    raw_texts = [(page_no, text) for text, page_no in pages]
+    warnings: list[str] = []
+
+    if filter_ai:
+        drop, _removals, ai_warnings = await ai_filter_lines(session, raw_texts)
+        warnings.extend(ai_warnings)
+        result = filtering.filter_with_ai_lines(raw_texts, drop)
+    else:
+        result = filtering.filter_raw(raw_texts)
+    warnings.extend(result.warnings)
+
+    kept = [(text, page_no) for page_no, text in result.pages]
+    if not kept:
+        # 全被删掉说明规则太激进，宁可退回原文也不要给用户一个空文档
+        warnings.append("过滤后没有内容留下，已退回未过滤的原文。")
+        return pages, warnings
+    return kept, warnings
+
+
+# --------------------------------------------------------------------------- #
 # 分块
 # --------------------------------------------------------------------------- #
 async def build_preview(
@@ -226,13 +345,19 @@ async def build_preview(
     strategy: str = "recursive",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_OVERLAP,
+    filter_raw: bool = False,
+    filter_ai: bool = False,
 ) -> ChunkResult:
     """生成分块预览（纯计算，不落库）。"""
     doc = await session.get(Document, document_id)
     if doc is None:
         raise AppError(NOT_FOUND, f"文档 #{document_id} 不存在", status_code=404)
-    pages = await load_pages(session, document_id)
-    return split_local(pages, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
+    pages, filter_warnings = await filtered_pages(
+        session, document_id, filter_raw=filter_raw, filter_ai=filter_ai
+    )
+    result = split_local(pages, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
+    result.warnings = [*filter_warnings, *result.warnings]
+    return result
 
 
 async def build_semantic_preview(
@@ -242,6 +367,8 @@ async def build_semantic_preview(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = 0,
     threshold: float = 0.55,
+    filter_raw: bool = False,
+    filter_ai: bool = False,
 ) -> ChunkResult:
     """语义切分：需要真实调用向量模型。
 
@@ -253,17 +380,21 @@ async def build_semantic_preview(
     doc = await session.get(Document, document_id)
     if doc is None:
         raise AppError(NOT_FOUND, f"文档 #{document_id} 不存在", status_code=404)
-    pages = await load_pages(session, document_id)
+    pages, filter_warnings = await filtered_pages(
+        session, document_id, filter_raw=filter_raw, filter_ai=filter_ai
+    )
     spec = await resolve_embedding_spec(session, doc.kb_id)
     client = EmbeddingClient(spec)
 
-    return await split_semantic(
+    result = await split_semantic(
         pages,
         embed_fn=client.embed,
         chunk_size=chunk_size,
         overlap=overlap,
         threshold=threshold,
     )
+    result.warnings = [*filter_warnings, *result.warnings]
+    return result
 
 
 async def save_drafts(session: AsyncSession, document_id: int, drafts: list[ChunkDraft]) -> int:

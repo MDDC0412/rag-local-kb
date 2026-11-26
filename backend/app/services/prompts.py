@@ -185,7 +185,7 @@ async def grouped_templates(session: AsyncSession) -> list[dict]:
     for row in rows:
         grouped.setdefault(row.kind, []).append(row)
 
-    order = ["system", "optimize", "query_rewrite", "parse", "chunk", "tag"]
+    order = ["system", "optimize", "query_rewrite", "parse", "filter", "tag"]
     result: list[dict] = []
     for kind in order:
         items = grouped.get(kind)

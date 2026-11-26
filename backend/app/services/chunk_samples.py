@@ -242,17 +242,6 @@ SAMPLES: dict[str, StrategySample] = {
         ],
         document=TABLE,
     ),
-    "llm": StrategySample(
-        strategy="llm",
-        title="结构混乱、需要人来判断边界的文档",
-        why="排版完全不可靠时，让模型读一遍再决定在哪断句，能救回语义完整性。",
-        traits=[
-            "排版混乱或从 PDF 提取后错行",
-            "语义边界与排版边界不一致",
-            "愿意为准确性付额外费用与等待",
-        ],
-        document=SPEC,
-    ),
 }
 
 

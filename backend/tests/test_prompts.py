@@ -117,11 +117,11 @@ async def test_create_template(session: AsyncSession) -> None:
     """新建自定义模板。"""
     row = await prompt_service.create_template(
         session,
-        PromptTemplateCreate(kind="chunk", name="我的分块", content="切得细一点"),
+        PromptTemplateCreate(kind="filter", name="我的过滤", content="删掉目录"),
     )
     assert row.id
     assert row.is_builtin is False
-    assert row.kind == "chunk"
+    assert row.kind == "filter"
 
 
 @pytest.mark.asyncio
@@ -156,10 +156,10 @@ async def test_builtin_cannot_be_deleted(session: AsyncSession) -> None:
 async def test_custom_can_be_deleted(session: AsyncSession) -> None:
     """自定义模板可以删。"""
     row = await prompt_service.create_template(
-        session, PromptTemplateCreate(kind="chunk", name="临时", content="x")
+        session, PromptTemplateCreate(kind="filter", name="临时", content="x")
     )
     await prompt_service.delete_template(session, row.id)
-    rows = await prompt_service.list_templates(session, kind="chunk")
+    rows = await prompt_service.list_templates(session, kind="filter")
     assert rows == []
 
 
@@ -197,7 +197,7 @@ async def test_reset_duplicate_by_name_suffix(session: AsyncSession) -> None:
 async def test_reset_without_original_fails(session: AsyncSession) -> None:
     """该 kind 下完全没有内置模板时才报错。"""
     row = await prompt_service.create_template(
-        session, PromptTemplateCreate(kind="chunk", name="没有原文的", content="x")
+        session, PromptTemplateCreate(kind="filter", name="没有原文的", content="x")
     )
     with pytest.raises(AppError) as exc:
         await prompt_service.reset_template(session, row.id)

@@ -8,14 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.timeutil import UTCDateTime
 
-PromptKind = Literal["system", "optimize", "query_rewrite", "parse", "chunk", "tag"]
+PromptKind = Literal["system", "optimize", "query_rewrite", "parse", "filter", "tag"]
 
 PROMPT_KIND_LABEL: dict[str, str] = {
     "system": "系统提示词",
     "optimize": "提问优化",
     "query_rewrite": "查询改写",
     "parse": "文档解析",
-    "chunk": "分块",
+    "filter": "智能过滤",
     "tag": "标签分类",
 }
 

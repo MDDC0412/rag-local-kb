@@ -20,7 +20,6 @@ from app.db.models import ProviderConfig
 from app.providers.base import ProviderSpec
 from app.providers.llm import build_chat_model
 from app.providers.registry import resolve_spec
-from app.services.chunking import ChunkResult, split_llm, split_local
 from app.services.parsing import PageText, ParseResult, parse_document
 
 logger = logging.getLogger(__name__)
@@ -31,12 +30,6 @@ PARSE_TEMPLATE_FALLBACK = """把下面的原始文本整理成干净的 Markdown
 只输出整理后的正文。
 
 原始文本：
-{text}"""
-
-CHUNK_TEMPLATE_FALLBACK = """把下面的文本切成语义完整的块，每块 150-400 字，不要在一句话中间切断，
-保留原文措辞。只输出 JSON 数组，元素是字符串：["第一块", "第二块"]。
-
-文本：
 {text}"""
 
 
@@ -119,32 +112,3 @@ async def parse_with_llm(
     if result.char_count == 0:
         raise AppError("LLM_PARSE_EMPTY", "智能解析没有产出内容，请改用本地解析", status_code=400)
     return result
-
-
-async def chunk_with_llm(
-    session: AsyncSession, document_id: int, *, chunk_size: int = 512, overlap: int = 0
-) -> ChunkResult:
-    """LLM 智能分块；整体失败时回退到递归切分而不是报错。"""
-    from app.services.documents import load_pages
-
-    pages = await load_pages(session, document_id)
-    spec = await _get_llm_spec(session, None)
-    model = build_chat_model(spec, temperature=0.0, streaming=False)
-    template = await _load_template(session, "chunk", CHUNK_TEMPLATE_FALLBACK)
-
-    try:
-        return await split_llm(
-            pages,
-            chat_model=model,
-            prompt_template=template,
-            chunk_size=chunk_size,
-            overlap=overlap,
-        )
-    except Exception as exc:
-        logger.warning("LLM 分块整体失败，回退递归切分：%s", exc)
-        fallback = split_local(
-            pages, strategy="recursive", chunk_size=chunk_size, overlap=max(overlap, 64)
-        )
-        fallback.strategy = "recursive"
-        fallback.warnings.append(f"智能切分不可用（{type(exc).__name__}），已自动改用递归切分。")
-        return fallback

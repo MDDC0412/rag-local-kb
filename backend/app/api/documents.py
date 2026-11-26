@@ -19,6 +19,8 @@ from app.schemas.document import (
     ChunkUpdateRequest,
     DocumentDetail,
     DocumentOut,
+    FilterPreviewRequest,
+    FilterPreviewResponse,
     ParseRequest,
     ParseResponse,
     StatsOut,
@@ -28,7 +30,6 @@ from app.schemas.job import JobEnqueued
 from app.services import documents as doc_service
 from app.services import jobs as job_service
 from app.services import tagging as tagging_service
-from app.services.llm_parse import chunk_with_llm
 from app.workers.queue import get_queue
 
 logger = logging.getLogger(__name__)
@@ -209,8 +210,12 @@ async def preview_chunks(
 ) -> ChunkPreviewResponse:
     """按指定策略切分并可选落库（is_confirmed=0）。
 
-    strategy=semantic 会真的调用向量模型（每批 32 句一次请求），属于"要花钱"的策略；
-    strategy=llm 会调用对话模型，代价更高。两者失败都会自动回退递归切分。
+    分块**之前**可以先过滤：``filter_raw`` 走规则（页眉页脚/页码/碎片行，零成本），
+    ``filter_ai`` 再让模型判断一次哪些行没有检索价值（只调 1 次）。
+
+    strategy=semantic 会真的调用向量模型，属于"要花钱"的策略；
+    它失败会回退递归切分。原来的「智能切分」（逐段调大模型）已移除：
+    75k 字的文档要 30 次串行请求、十几分钟，代价与收益完全不成比例。
     """
     if payload.strategy == "semantic":
         result = await doc_service.build_semantic_preview(
@@ -219,13 +224,8 @@ async def preview_chunks(
             chunk_size=payload.chunk_size,
             overlap=payload.overlap,
             threshold=payload.semantic_threshold,
-        )
-    elif payload.strategy == "llm":
-        result = await chunk_with_llm(
-            session,
-            document_id,
-            chunk_size=payload.chunk_size,
-            overlap=payload.overlap,
+            filter_raw=payload.filter_raw,
+            filter_ai=payload.filter_ai,
         )
     else:
         result = await doc_service.build_preview(
@@ -234,6 +234,8 @@ async def preview_chunks(
             strategy=payload.strategy,
             chunk_size=payload.chunk_size,
             overlap=payload.overlap,
+            filter_raw=payload.filter_raw,
+            filter_ai=payload.filter_ai,
         )
 
     chunk_ids: list[int] = []
@@ -289,47 +291,28 @@ async def list_chunk_strategies() -> dict:
     return {"items": items}
 
 
-@router.post("/documents/{document_id}/chunks/llm", response_model=ChunkPreviewResponse)
-async def preview_chunks_llm(
+@router.post("/documents/{document_id}/filter/preview", response_model=FilterPreviewResponse)
+async def filter_preview(
     document_id: int,
-    payload: ChunkPreviewRequest,
+    payload: FilterPreviewRequest,
     session: AsyncSession = Depends(get_session),
-) -> ChunkPreviewResponse:
-    """用 LLM 做语义切分（失败自动回退递归切分）。"""
-    from app.services.llm_parse import chunk_with_llm
+) -> FilterPreviewResponse:
+    """过滤预览：分块**之前**的清洗，只看效果不落库。
 
-    result = await chunk_with_llm(
-        session, document_id, chunk_size=payload.chunk_size, overlap=payload.overlap
-    )
-    if payload.save and result.chunks:
-        await doc_service.save_drafts(session, document_id, result.chunks)
-        saved = await doc_service.list_chunks(session, document_id)
-        chunk_ids = [chunk.id for chunk in saved if not chunk.is_confirmed]
-    else:
-        chunk_ids = []
+    - `filter_raw`：规则清洗（页眉页脚、页码、碎片行、乱码），零成本；
+    - `filter_ai`：再让模型判断一次哪些行没有检索价值（**只调 1 次**）。
 
-    items = [
-        ChunkPreviewItem(
-            id=chunk_ids[index] if index < len(chunk_ids) else None,
-            seq=draft.seq,
-            content=draft.content,
-            token_count=draft.token_count,
-            char_count=draft.char_count,
-            page_no=draft.page_no,
-        )
-        for index, draft in enumerate(result.chunks)
-    ]
-    return ChunkPreviewResponse(
-        document_id=document_id,
-        strategy="llm",
-        chunk_size=result.chunk_size,
-        overlap=result.overlap,
-        chunks=items,
-        count=result.count,
-        total_tokens=result.total_tokens,
-        avg_tokens=result.avg_tokens,
-        warnings=result.warnings,
+    这是替代原来"智能切分"的地方：同样是让模型参与，但只做**判定**、
+    只调一次，而不是对全文逐段调用。
+    """
+    data = await doc_service.build_filter_preview(
+        session,
+        document_id,
+        filter_raw=payload.filter_raw,
+        filter_ai=payload.filter_ai,
+        llm_provider_id=payload.llm_provider_id,
     )
+    return FilterPreviewResponse(**data)
 
 
 @router.put("/chunks/{chunk_id}", response_model=ChunkPreviewItem)

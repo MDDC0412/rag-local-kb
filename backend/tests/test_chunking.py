@@ -10,7 +10,6 @@ from app.core.errors import AppError
 from app.services.chunking import (
     MIN_CHUNK_TOKENS,
     _merge_tiny,
-    _parse_llm_json,
     split_local,
 )
 from app.services.parsing import (
@@ -227,30 +226,6 @@ def test_empty_pages_warn() -> None:
     result = split_local([("   ", 1)], strategy="recursive")
     assert result.count == 0
     assert result.warnings
-
-
-# --------------------------------------------------------------------------- #
-# LLM 输出解析
-# --------------------------------------------------------------------------- #
-def test_parse_llm_json_plain() -> None:
-    """标准 JSON 数组。"""
-    assert _parse_llm_json('["第一块", "第二块"]') == ["第一块", "第二块"]
-
-
-def test_parse_llm_json_with_fence() -> None:
-    """带 ```json 代码块包裹也能解析。"""
-    assert _parse_llm_json('```json\n["a", "b"]\n```') == ["a", "b"]
-
-
-def test_parse_llm_json_with_chatter() -> None:
-    """前后有废话时仍能抠出数组。"""
-    assert _parse_llm_json('好的，结果如下：\n["x", "y"]\n希望有帮助') == ["x", "y"]
-
-
-def test_parse_llm_json_invalid() -> None:
-    """没有数组时抛 ValueError，让上层回退。"""
-    with pytest.raises(ValueError):
-        _parse_llm_json("我切好了，但是没给 JSON")
 
 
 def test_page_text_counts() -> None:

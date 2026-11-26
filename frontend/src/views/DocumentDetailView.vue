@@ -9,6 +9,7 @@ import {
   type ChunkItem,
   type ChunkStrategy,
   type DocumentDetail,
+  type FilterPreview,
   type PageItem,
   type PreviewResult,
   type StrategyMeta,
@@ -46,6 +47,9 @@ const options = reactive({
   chunk_size: 512,
   overlap: 64,
   semantic_threshold: 0.55,
+  // 过滤发生在分块之前：原文过滤零成本，智能过滤只调 1 次模型
+  filter_raw: false,
+  filter_ai: false,
 })
 
 /** 当前策略的元信息，用于显示说明和"要不要花钱"的提示。 */
@@ -55,6 +59,34 @@ const currentStrategy = computed(() =>
 
 const needsApi = computed(() => currentStrategy.value?.needs_api ?? false)
 const showThreshold = computed(() => options.strategy === 'semantic')
+
+/** 智能过滤依赖大模型，未开启原文过滤时也允许单独用（两者取并集） */
+const filtering = computed(() => options.filter_raw || options.filter_ai)
+
+// 过滤预览
+const filterPreview = ref<FilterPreview | null>(null)
+const filterLoading = ref(false)
+const filterError = ref('')
+
+async function runFilterPreview() {
+  if (!options.filter_raw && !options.filter_ai) {
+    filterError.value = '请先勾选至少一种过滤方式'
+    return
+  }
+  filterLoading.value = true
+  filterError.value = ''
+  try {
+    filterPreview.value = await docsApi.filterPreview(docId, {
+      filter_raw: options.filter_raw,
+      filter_ai: options.filter_ai,
+    })
+  } catch (e) {
+    filterError.value = (e as Error).message
+    filterPreview.value = null
+  } finally {
+    filterLoading.value = false
+  }
+}
 
 /** 当前策略是否配了样例（配了才显示「看样例」按钮）。 */
 const hasSample = computed(() => sampleStrategies.value.has(options.strategy))
@@ -398,6 +430,63 @@ onMounted(load)
       </div>
     </section>
 
+    <!-- 过滤：分块之前的清洗 -->
+    <section class="filter card">
+      <div class="filter-head">
+        <span class="section-title">过滤</span>
+        <span class="hint-text">
+          在切分之前先决定哪些文字值得留下。删掉的都是整行，不改动行内一个字。
+        </span>
+      </div>
+
+      <div class="filter-body">
+        <label class="filter-opt">
+          <input v-model="options.filter_raw" type="checkbox" />
+          <span class="filter-name">原文过滤</span>
+          <span class="filter-desc">
+            规则清洗：页眉页脚、页码、孤儿碎片行、乱码。纯本地计算，毫秒级。
+          </span>
+        </label>
+        <label class="filter-opt">
+          <input v-model="options.filter_ai" type="checkbox" />
+          <span class="filter-name">智能过滤</span>
+          <span class="filter-desc">
+            让模型判断一次哪些行没有检索价值（目录、版权声明、广告封面）。
+            <b>只调 1 次接口</b>，与文档长度无关。
+          </span>
+        </label>
+        <button
+          class="btn btn-sm filter-preview-btn"
+          :disabled="filterLoading || !filtering"
+          @click="runFilterPreview"
+        >
+          {{ filterLoading ? '过滤中…' : '预览过滤效果' }}
+        </button>
+      </div>
+
+      <p v-if="filterError" class="err">{{ filterError }}</p>
+
+      <div v-if="filterPreview" class="filter-result">
+        <div class="filter-stats">
+          <span>{{ filterPreview.raw_chars }} 字</span>
+          <span class="arrow">→</span>
+          <span class="kept">{{ filterPreview.kept_chars }} 字</span>
+          <span v-if="filterPreview.removed_count" class="tag tag-warn">
+            删除 {{ filterPreview.removed_count }} 行
+          </span>
+          <span v-else class="tag tag-ok">没有删除任何行</span>
+        </div>
+        <ul v-if="filterPreview.removals.length" class="removal-list">
+          <li v-for="item in filterPreview.removals" :key="`${item.page_no}-${item.line_no}`">
+            <span class="removal-tag">{{ item.reason }}</span>
+            <span class="removal-pos num">第{{ item.page_no }}段/第{{ item.line_no }}行</span>
+            <span class="removal-text">{{ item.text }}</span>
+          </li>
+        </ul>
+        <p v-for="w in filterPreview.warnings" :key="w" class="hint-text filter-warn">{{ w }}</p>
+      </div>
+    </section>
+
     <!-- 切分参数 -->
     <section class="toolbar card">
       <div class="tool tool-wide">
@@ -442,6 +531,7 @@ onMounted(load)
     <p v-if="currentStrategy" class="strategy-hint">
       {{ currentStrategy.hint }}
       <span v-if="needsApi" class="tag tag-warn">会产生接口费用</span>
+      <span v-if="filtering" class="tag tag-ok">已开启过滤</span>
     </p>
 
     <div v-if="previewStats" class="summary">
@@ -698,6 +788,130 @@ onMounted(load)
   font-size: 12px;
   color: var(--danger);
   line-height: 1.55;
+}
+
+/* 过滤面板 */
+.filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.filter-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.filter-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+
+.filter-opt {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  row-gap: 1px;
+  max-width: 380px;
+  cursor: pointer;
+}
+.filter-opt input {
+  grid-row: span 2;
+  align-self: center;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.filter-name {
+  font-size: 12.5px;
+  color: var(--text-0);
+  font-weight: 600;
+}
+.filter-desc {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.filter-desc b {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.filter-preview-btn {
+  margin-left: auto;
+  flex: none;
+}
+
+.filter-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+}
+
+.filter-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  color: var(--text-1);
+}
+.filter-stats .arrow {
+  color: var(--text-2);
+}
+.filter-stats .kept {
+  color: var(--text-0);
+  font-weight: 600;
+}
+
+.removal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.removal-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.removal-tag {
+  flex: none;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 3px;
+}
+.removal-pos {
+  flex: none;
+  color: var(--text-2);
+  font-size: 10.5px;
+}
+.removal-text {
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-warn {
+  margin: 0;
 }
 
 /* 工具条 */

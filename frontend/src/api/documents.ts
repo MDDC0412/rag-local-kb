@@ -103,7 +103,6 @@ export type ChunkStrategy =
   | 'paragraph'
   | 'markdown'
   | 'semantic'
-  | 'llm'
   | 'parent_child'
 
 export interface StrategyMeta {
@@ -119,6 +118,28 @@ export interface ChunkOptions {
   overlap: number
   semantic_threshold?: number
   save?: boolean
+  /** 原文过滤：规则清洗页眉页脚/页码/碎片行，零成本 */
+  filter_raw?: boolean
+  /** 智能过滤：让模型判断哪些行没有检索价值，只调 1 次，默认关 */
+  filter_ai?: boolean
+}
+
+export interface FilterRemoval {
+  page_no: number
+  line_no: number
+  text: string
+  reason: string
+}
+
+export interface FilterPreview {
+  document_id: number
+  mode: string
+  raw_chars: number
+  kept_chars: number
+  removed_count: number
+  removals: FilterRemoval[]
+  warnings: string[]
+  pages: Array<{ page_no: number; text: string }>
 }
 
 export interface StrategySample {
@@ -188,6 +209,15 @@ export const docsApi = {
       overlap: opts.overlap,
       semantic_threshold: opts.semantic_threshold ?? 0.55,
       save: opts.save ?? true,
+      filter_raw: opts.filter_raw ?? false,
+      filter_ai: opts.filter_ai ?? false,
+    }),
+
+  /** 过滤预览：分块之前先看清洗效果（不落库） */
+  filterPreview: (id: number, opts: { filter_raw: boolean; filter_ai: boolean }) =>
+    http.post<FilterPreview>(`/documents/${id}/filter/preview`, {
+      filter_raw: opts.filter_raw,
+      filter_ai: opts.filter_ai,
     }),
 
   updateChunk: (chunkId: number, content: string) =>

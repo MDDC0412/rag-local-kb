@@ -22,7 +22,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -45,7 +44,9 @@ DEFAULT_OVERLAP = 64
 DEFAULT_SEMANTIC_THRESHOLD = 0.55  # 相邻句子相似度低于此值就断开
 
 LOCAL_STRATEGIES = ("fixed", "recursive", "sentence", "paragraph", "markdown", "parent_child")
-API_STRATEGIES = ("semantic", "llm")
+# 只有语义切分需要调接口。原「智能切分」已移除：它把全文按 3000 字切段、
+# 逐段调模型，75k 字的文档要 30 次串行请求、十几分钟 —— 对"切分"这件事不值得。
+API_STRATEGIES = ("semantic",)
 
 STRATEGY_LABEL = {
     "fixed": "定长切分",
@@ -54,7 +55,6 @@ STRATEGY_LABEL = {
     "paragraph": "段落聚合",
     "markdown": "标题分节",
     "semantic": "语义切分",
-    "llm": "智能切分",
     "parent_child": "父子块",
 }
 
@@ -65,7 +65,6 @@ STRATEGY_HINT = {
     "paragraph": "以空行分段为单位聚合，适合作者本来分好段的文档。",
     "markdown": "按 #/##/### 标题切分，并把标题路径记进每块。",
     "semantic": "逐句算相似度，话题转折处断开。每 200 句约 7 次向量请求。",
-    "llm": "由大模型判断语义边界，效果最好但最慢、最贵。",
     "parent_child": "用小块检索提高命中率，命中后把所属父块交给模型，上下文更完整。",
 }
 
@@ -482,98 +481,3 @@ def _cosine(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
-
-
-# --------------------------------------------------------------------------- #
-# LLM 智能切分
-# --------------------------------------------------------------------------- #
-_LLM_INPUT_CHARS = 3000  # 单次送模型的字符上限
-
-
-def _parse_llm_json(raw: str) -> list[str]:
-    """从模型输出里抠出 JSON 数组，容忍 ```json 包裹与前后废话。"""
-    text = raw.strip()
-    fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.S)
-    if fence:
-        text = fence.group(1).strip()
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("模型输出里找不到 JSON 数组")
-    data = json.loads(text[start : end + 1])
-    if not isinstance(data, list):
-        raise ValueError("模型返回的不是数组")
-    return [str(item).strip() for item in data if str(item).strip()]
-
-
-async def split_llm(
-    pages: list[tuple[str, int]],
-    *,
-    chat_model,
-    prompt_template: str,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    overlap: int = 0,
-) -> ChunkResult:
-    """用 LLM 按语义切分；失败或产出异常时回退到递归切分。"""
-    result = ChunkResult(strategy="llm", chunk_size=chunk_size, overlap=overlap)
-    if not pages:
-        result.warnings.append("没有可切分的内容。")
-        return result
-
-    pieces: list[tuple[str, int, str]] = []
-    failed_segments = 0
-
-    for text, page_no in pages:
-        segments = _split_for_llm(text)
-        for segment in segments:
-            try:
-                prompt = prompt_template.format(text=segment)
-                response = await chat_model.ainvoke(prompt)
-                content = (
-                    response.content if isinstance(response.content, str) else str(response.content)
-                )
-                blocks = _parse_llm_json(content)
-                if not blocks:
-                    raise ValueError("模型返回空数组")
-                for block in blocks:
-                    # 模型可能不守规矩地给出超长块，这里再兜一次
-                    if count_tokens(block) > chunk_size * 2:
-                        for sub, _, _ in _pieces_recursive([(block, page_no)], chunk_size, overlap):
-                            pieces.append((sub, page_no, ""))
-                    else:
-                        pieces.append((block, page_no, ""))
-            except Exception as exc:
-                failed_segments += 1
-                logger.warning("LLM 切分失败（第 %s 段）：%s", failed_segments, exc)
-                pieces.extend(_pieces_recursive([(segment, page_no)], chunk_size, overlap))
-
-    if failed_segments:
-        result.warnings.append(
-            f"有 {failed_segments} 段智能切分失败或输出不合规，这些段落已自动回退为递归切分。"
-        )
-    result = _build_chunks(pieces, "llm", chunk_size, overlap)
-    result.strategy = "llm"
-    if result.count == 0:
-        raise AppError("LLM_CHUNK_EMPTY", "智能切分没有产出任何内容，请改用递归切分")
-    return result
-
-
-def _split_for_llm(text: str) -> list[str]:
-    """把一段文本按约 3000 字符切开，尽量在段落边界。"""
-    text = text.strip()
-    if len(text) <= _LLM_INPUT_CHARS:
-        return [text] if text else []
-
-    segments: list[str] = []
-    buffer = ""
-    for paragraph in text.split("\n\n"):
-        if not buffer:
-            buffer = paragraph
-        elif len(buffer) + len(paragraph) + 2 <= _LLM_INPUT_CHARS:
-            buffer = f"{buffer}\n\n{paragraph}"
-        else:
-            segments.append(buffer)
-            buffer = paragraph
-    if buffer:
-        segments.append(buffer)
-    return segments
