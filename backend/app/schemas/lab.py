@@ -38,7 +38,6 @@ class EmbedResponse(BaseModel):
     text: str
     cached: bool = Field(description="是否命中缓存（命中则没有调用模型接口）")
     model: str
-    provider_id: int
     dim: int
     norm: float
     token_count: int
