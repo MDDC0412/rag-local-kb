@@ -59,6 +59,8 @@ const debugData = ref<RetrievalDebugData | null>(null)
 // 提示词优化
 const optimizing = ref(false)
 const suggestion = ref<{ optimized: string; rationale: string } | null>(null)
+/** 优化前的原文，用于「撤销」。 */
+const preOptimizeDraft = ref('')
 
 const listEl = ref<HTMLElement | null>(null)
 
@@ -300,6 +302,8 @@ function stop() {
 async function optimize() {
   if (!draft.value.trim() || optimizing.value) return
   optimizing.value = true
+  // 记住采纳前的原文，撤销时才能还原
+  preOptimizeDraft.value = draft.value
   suggestion.value = null
   try {
     suggestion.value = await chatApi.optimize(
@@ -321,6 +325,28 @@ function adoptSuggestion() {
     draft.value = suggestion.value.optimized
     suggestion.value = null
   }
+}
+
+/** 忽略：关掉建议卡片，输入框保持原样。 */
+function dismissSuggestion() {
+  suggestion.value = null
+  preOptimizeDraft.value = ''
+}
+
+/** 撤销：把输入框还原成优化前的内容。 */
+function undoAdopt() {
+  if (preOptimizeDraft.value) {
+    draft.value = preOptimizeDraft.value
+    preOptimizeDraft.value = ''
+  }
+}
+
+/** 再改：以当前建议为草稿再优化一次。 */
+async function refineSuggestion() {
+  if (!suggestion.value) return
+  draft.value = suggestion.value.optimized
+  suggestion.value = null
+  await optimize()
 }
 
 function citationsOf(msg: MessageItem): Citation[] {
@@ -492,7 +518,10 @@ onMounted(async () => {
           <p class="suggest-text">{{ suggestion.optimized }}</p>
           <div class="suggest-actions">
             <button class="btn btn-sm btn-primary" @click="adoptSuggestion">采用</button>
-            <button class="btn btn-sm btn-quiet" @click="suggestion = null">忽略</button>
+            <button class="btn btn-sm btn-quiet" :disabled="optimizing" @click="refineSuggestion">
+              再改
+            </button>
+            <button class="btn btn-sm btn-quiet" @click="dismissSuggestion">忽略</button>
           </div>
         </div>
 
@@ -504,6 +533,14 @@ onMounted(async () => {
             @keydown.enter.exact.prevent="send"
           />
           <div class="input-actions">
+            <button
+              v-if="preOptimizeDraft"
+              class="btn btn-sm btn-quiet"
+              title="把输入框还原成优化前的内容"
+              @click="undoAdopt"
+            >
+              撤销优化
+            </button>
             <button
               class="btn btn-sm btn-quiet"
               :disabled="!draft.trim() || optimizing"

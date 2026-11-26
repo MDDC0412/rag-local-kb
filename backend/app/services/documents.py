@@ -23,11 +23,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.core.errors import (
+    EMPTY_FILE,
     FILE_TOO_LARGE,
     NOT_FOUND,
     PROVIDER_NOT_FOUND,
-    UNSUPPORTED_FILE_TYPE,
     AppError,
+    message_for,
 )
 from app.db.models import Chunk, Document, DocumentPage, KnowledgeBase, ProviderConfig
 from app.providers.embed import EmbeddingClient
@@ -76,11 +77,14 @@ async def save_upload(
     重复判定：同一知识库内 sha256 相同。重复时返回已有文档，不重复占磁盘。
     """
     if len(content) == 0:
-        raise AppError(UNSUPPORTED_FILE_TYPE, f"「{filename}」是空文件", status_code=400)
+        raise AppError(
+            EMPTY_FILE, message_for(EMPTY_FILE, f"「{filename}」是空文件"), status_code=400
+        )
     if len(content) > MAX_FILE_SIZE:
         raise AppError(
             FILE_TOO_LARGE,
-            f"「{filename}」超过 50MB 上限（{len(content) / 1024 / 1024:.1f}MB）",
+            f"「{filename}」超过 50MB 上限（{len(content) / 1024 / 1024:.1f}MB）。"
+            f"请拆分后再上传，或压缩其中的图片。",
             status_code=413,
         )
 

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.core.errors import UNSUPPORTED_FILE_TYPE, AppError
+from app.core.errors import SCANNED_PDF, UNSUPPORTED_FILE_TYPE, AppError, message_for
 from app.services.tokenizer import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -132,10 +132,8 @@ def parse_pdf(path: Path) -> ParseResult:
             result.pages.append(PageText(page_no=index + 1, text=text))
 
     if empty_pages and empty_pages == total_pages:
-        result.warnings.append(
-            "整份 PDF 都没能提取到文字，可能是扫描件或图片版。"
-            "本项目不做 OCR，建议先用其他工具转成文字版。"
-        )
+        # 文案统一从 core.errors 取，避免各处自己拼一套说法
+        result.warnings.append(message_for(SCANNED_PDF))
     elif empty_pages > total_pages * 0.5:
         result.warnings.append(
             f"有 {empty_pages}/{total_pages} 页没有提取到文字，疑似扫描页，这些页不会进入检索。"
