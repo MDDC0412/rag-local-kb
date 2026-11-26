@@ -8,13 +8,16 @@ data/
 docs/keys.txt
 *.pem
 
+# ---- 内部文档与协作规范：仅本地保留，不纳入公开仓库 ----
+docs/
+AGENTS.md
+
 # ---- python ----
 __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
 .ruff_cache/
-# pytest 在工作区根留下的一次性缓存目录（本次清理由此产生）
 pytest-cache-files-*/
 .coverage
 htmlcov/
