@@ -23,6 +23,7 @@ import {
 import AnglePlot from '@/components/lab/AnglePlot.vue'
 import ChunkColumn from '@/components/lab/ChunkColumn.vue'
 import GlossaryCard from '@/components/lab/GlossaryCard.vue'
+import KnowledgeBase from '@/components/lab/KnowledgeBase.vue'
 import RerankFlow from '@/components/lab/RerankFlow.vue'
 import VectorBar from '@/components/lab/VectorBar.vue'
 import VectorHeat from '@/components/lab/VectorHeat.vue'
@@ -30,13 +31,14 @@ import VectorHeat from '@/components/lab/VectorHeat.vue'
 // --------------------------------------------------------------------------- //
 // 页面骨架
 // --------------------------------------------------------------------------- //
-type TabKey = 'embed' | 'similarity' | 'chunk' | 'retrieve'
+type TabKey = 'embed' | 'similarity' | 'chunk' | 'retrieve' | 'knowledge'
 
 const TABS: Array<{ key: TabKey; index: string; title: string; subtitle: string }> = [
   { key: 'embed', index: '01', title: '文本 → 向量', subtitle: '一段话怎么变成一串数字' },
   { key: 'similarity', index: '02', title: '余弦相似度', subtitle: '两段话「有多像」怎么算' },
   { key: 'chunk', index: '03', title: '分块实验台', subtitle: '长文档怎么切才不切坏' },
   { key: 'retrieve', index: '04', title: '检索链路', subtitle: '四步各自干了什么' },
+  { key: 'knowledge', index: '05', title: '术语与面试题', subtitle: '名词解释 + 常见追问' },
 ]
 
 const activeTab = ref<TabKey>('embed')
@@ -287,7 +289,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
 
     <p v-if="bootError" class="boot-error">{{ bootError }}</p>
 
-    <div class="body">
+    <div class="body" :class="{ 'body-wide': activeTab === 'knowledge' }">
       <div class="stage">
         <!-- ============================ Tab ① ============================ -->
         <section v-if="activeTab === 'embed'" class="panel" :class="{ focus: activeAnchor === 'embed' }">
@@ -581,7 +583,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
 
         <!-- ============================ Tab ④ ============================ -->
         <section
-          v-else
+          v-else-if="activeTab === 'retrieve'"
           class="panel"
           :class="{ focus: activeAnchor === 'retrieve' }"
         >
@@ -748,10 +750,15 @@ function rrfValues(terms: Array<{ value: number }>): string {
             </div>
           </template>
         </section>
+
+        <!-- ============================ Tab ⑤ ============================ -->
+        <section v-else-if="activeTab === 'knowledge'" class="panel">
+          <KnowledgeBase />
+        </section>
       </div>
 
-      <!-- 术语卡 -->
-      <GlossaryCard :active-anchor="activeAnchor" @focus="focusAnchor" />
+      <!-- 术语卡：只在可视化四个 Tab 里显示；Tab⑤ 本身就是词典，再挂一张卡是重复 -->
+      <GlossaryCard v-if="activeTab !== 'knowledge'" :active-anchor="activeAnchor" @focus="focusAnchor" />
     </div>
   </div>
 </template>
@@ -835,6 +842,11 @@ function rrfValues(terms: Array<{ value: number }>): string {
   grid-template-columns: minmax(0, 1fr) 264px;
   gap: var(--sp-4);
   align-items: start;
+}
+
+/* Tab⑤ 没有右侧术语卡，铺满整行 */
+.body-wide {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @media (max-width: 1180px) {

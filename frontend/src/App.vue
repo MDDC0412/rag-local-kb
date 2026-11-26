@@ -12,7 +12,7 @@ const nav = [
   { to: '/documents', title: '文档库' },
   { to: '/chat', title: '对话' },
   { to: '/prompts', title: '提示词库' },
-  { to: '/lab', title: 'RAG 实验室', milestone: 'M4' },
+  { to: '/lab', title: 'RAG 实验室' },
   { to: '/settings', title: '设置' },
 ]
 
@@ -42,7 +42,6 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
           :class="{ active: route.path === item.to }"
         >
           <span class="nav-label">{{ item.title }}</span>
-          <span v-if="item.milestone" class="nav-tag">{{ item.milestone }}</span>
         </RouterLink>
       </nav>
 
@@ -150,12 +149,6 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
   border-radius: 2px;
   background: var(--accent);
   transform: translateX(-8px);
-}
-
-.nav-tag {
-  font-size: 11px;
-  color: var(--text-2);
-  font-family: var(--font-mono);
 }
 
 .rail-foot {
