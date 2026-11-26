@@ -77,10 +77,10 @@ export interface Preset {
 
 export const PRESETS: Preset[] = [
   {
-    key: 'xiaopang-llm',
-    label: '第三方 OpenAI 兼容网关 网关（对话）',
+    key: 'gateway-llm',
+    label: 'OpenAI 兼容网关（对话）',
     kind: 'llm',
-    base_url: 'http://gateway.example.com/v1',
+    base_url: 'https://your-gateway.example.com/v1',
     protocol: 'openai',
     model: 'deepseek-v4.1-flash',
     note: 'OpenAI 兼容网关，模型列表可在填好后点"测试连接"查看',

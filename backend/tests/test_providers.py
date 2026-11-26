@@ -37,12 +37,12 @@ def test_origin_keeps_non_default_port() -> None:
     spec = ProviderSpec(
         kind="llm",
         name="网关",
-        base_url="http://gateway.example.com/v1",
+        base_url="http://gateway.example.com:28475/v1",
         api_key="k",
         model="m",
         protocol="openai",
     )
-    assert spec.origin == "http://gateway.example.com"
+    assert spec.origin == "http://gateway.example.com:28475"
 
 
 def test_repr_hides_api_key() -> None:
