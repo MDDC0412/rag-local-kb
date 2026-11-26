@@ -15,6 +15,7 @@ import time
 
 from app.graph.state import RagState
 from app.providers.base import ProviderSpec, embed_texts
+from app.providers.llm import invoke_prompt
 from app.services.retrieval import (
     RetrievalOptions,
     apply_rerank,
@@ -104,10 +105,7 @@ async def rewrite_node(state: RagState, *, chat_model=None) -> RagState:
 
     if recipe == "hyde":
         try:
-            response = await chat_model.ainvoke(HYDE_TEMPLATE.format(question=question))
-            content = (
-                response.content if isinstance(response.content, str) else str(response.content)
-            )
+            content = await invoke_prompt(chat_model, HYDE_TEMPLATE.format(question=question))
             hypothetical = (content or "").strip()
             if not hypothetical:
                 raise ValueError("HyDE 返回空")
@@ -148,8 +146,7 @@ async def rewrite_node(state: RagState, *, chat_model=None) -> RagState:
 
     try:
         prompt = REWRITE_TEMPLATE.format(history=_history_text(history), question=question)
-        response = await chat_model.ainvoke(prompt)
-        content = response.content if isinstance(response.content, str) else str(response.content)
+        content = await invoke_prompt(chat_model, prompt)
         rewritten = (content or "").strip().strip('"').strip()
         if not rewritten or len(rewritten) > max(200, len(question) * 4):
             raise ValueError("改写结果异常")

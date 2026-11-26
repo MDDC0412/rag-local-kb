@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.core.errors import PROVIDER_INVALID, AppError
 from app.core.net import async_client, sync_client
 from app.providers.base import ProviderSpec
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_SYSTEM = "你是严谨的中文助手，请严格按用户的要求完成任务，不要输出要求之外的内容。"
+
+# 网关「上游抖动」的典型特征：400 但带 upstream_error，或明确的限流/网关错误
+_TRANSIENT_HINTS = ("upstream_error", "could not be processed", "rate limit", "bad gateway")
 
 
 def build_chat_model(
@@ -42,3 +52,46 @@ def build_chat_model(
     if params.get("max_tokens"):
         kwargs["max_tokens"] = int(params["max_tokens"])
     return ChatOpenAI(**kwargs)
+
+
+async def invoke_prompt(
+    model: Any,
+    prompt: str,
+    *,
+    system: str = DEFAULT_SYSTEM,
+    attempts: int = 3,
+) -> str:
+    """把一段提示词包成 system + user 两条消息调用模型，返回纯文本。
+
+    为什么不直接 ``model.ainvoke("一段话")``：那样只会发出一条 user 消息，
+    而本项目用的网关（`deepseek-v4.1-flash`，2026-11-26 实测）对「只有 user」的请求
+    直接回 400 `upstream_error`；补一条 system 就正常。凡是「整段提示词 → 一段文本」
+    的调用都走这里，别各自拼。
+
+    另外这个网关会成片地返回 400 `upstream_error`（同一请求体，坏窗口里连发必失败、
+    过几分钟又全成功）。所以对「看起来像上游抖动」的错误做 1–2 次短重试；
+    真正的参数错误（如 401 无效密钥）立刻抛出，不浪费用户时间。
+    """
+    messages = [SystemMessage(content=system), HumanMessage(content=prompt)]
+    last: Exception | None = None
+    for index in range(max(1, attempts)):
+        try:
+            response = await model.ainvoke(messages)
+            content = response.content
+            return content if isinstance(content, str) else str(content)
+        except Exception as exc:
+            last = exc
+            if index >= attempts - 1 or not _looks_transient(exc):
+                raise
+            logger.warning("模型调用失败（第 %s 次），稍后重试：%s", index + 1, exc)
+            await asyncio.sleep(0.5 * (index + 1))
+    raise last  # pragma: no cover - 循环必然 return 或 raise
+
+
+def _looks_transient(exc: Exception) -> bool:
+    """判断异常是否属于「再试一次可能就好」的上游抖动。"""
+    text = str(exc).lower()
+    if any(hint in text for hint in _TRANSIENT_HINTS):
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and (status == 429 or status >= 500)

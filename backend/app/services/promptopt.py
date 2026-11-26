@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import PromptTemplate
-from app.providers.llm import build_chat_model
+from app.providers.llm import build_chat_model, invoke_prompt
 from app.providers.registry import resolve_spec
 
 logger = logging.getLogger(__name__)
@@ -91,8 +91,7 @@ async def optimize_question(
 
     prompt = template.format(history=_history_text(history), question=question)
     try:
-        response = await model.ainvoke(prompt)
-        content = response.content if isinstance(response.content, str) else str(response.content)
+        content = await invoke_prompt(model, prompt)
         return _parse(content)
     except Exception as exc:
         logger.warning("提问优化失败：%s", exc)

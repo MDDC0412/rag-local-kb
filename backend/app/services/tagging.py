@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NOT_FOUND, AppError
 from app.db.models import Category, Chunk, Document, DocumentPage, DocumentTag, PromptTemplate, Tag
-from app.providers.llm import build_chat_model
+from app.providers.llm import build_chat_model, invoke_prompt
 from app.providers.registry import resolve_spec
 
 logger = logging.getLogger(__name__)
@@ -246,10 +246,7 @@ async def _ask_model(prompt: str, session: AsyncSession) -> TagPayload:
     last_error: Exception | None = None
     for attempt in (1, 2):
         try:
-            response = await model.ainvoke(prompt)
-            content = (
-                response.content if isinstance(response.content, str) else str(response.content)
-            )
+            content = await invoke_prompt(model, prompt)
             return parse_payload(content)
         except Exception as exc:
             last_error = exc

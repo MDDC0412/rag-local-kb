@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import PROVIDER_NOT_FOUND, AppError
 from app.db.models import ProviderConfig
 from app.providers.base import ProviderSpec
-from app.providers.llm import build_chat_model
+from app.providers.llm import build_chat_model, invoke_prompt
 from app.providers.registry import resolve_spec
 from app.services.parsing import PageText, ParseResult, parse_document
 
@@ -94,10 +94,7 @@ async def parse_with_llm(
             continue
         try:
             prompt = template.format(text=page.text[:6000])
-            response = await model.ainvoke(prompt)
-            content = (
-                response.content if isinstance(response.content, str) else str(response.content)
-            )
+            content = await invoke_prompt(model, prompt)
             cleaned = (content or "").strip()
             if not cleaned:
                 raise ValueError("模型返回空内容")
