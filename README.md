@@ -1,306 +1,99 @@
-# 本地 RAG 知识库
+# 本地 RAG 知识库问答系统
 
-一个跑在自己电脑上的个人知识库问答系统。把 PDF / Word / Markdown / 纯文本丢进去，
-它会切块、向量化、自动打标签；然后用自然语言提问，它从你的文档里找依据，
-**带着出处**回答你，并把整个检索过程摊开给你看。
+一套运行于个人计算机的知识库问答系统，覆盖文档接入、解析、分块、向量化、混合检索、
+重排与带引用的流式问答全链路，并提供用于教学演示的 RAG 实验室页面。
 
-自用 + 学习项目，不是企业级产品：不做多用户、不做 OCR、不追求高并发。
+系统面向单用户、本地部署场景，不包含多用户、权限与 OCR 能力。
 
----
+## 功能范围
 
-## 它长什么样
+| 模块 | 能力 |
+|---|---|
+| 模型供应商 | LLM / Embedding / Rerank 三类；OpenAI 兼容协议，另支持硅基流动、Cohere、DashScope 三种重排协议 |
+| 文档接入 | 支持 PDF、DOCX、Markdown、TXT；扩展名白名单、单文件 50 MB 上限、SHA-256 去重 |
+| 解析与分块 | 本地解析或 LLM 辅助解析；分块前可选规则过滤与模型过滤；提供定长、递归、句子、段落、标题、父子块、语义七种策略 |
+| 预览与编辑 | 分块结果先落库再展示，支持改文、删块、合并、调参重切，确认后方可入库 |
+| 索引 | 异步任务队列执行向量化与入库，进度可查、失败可重试；支持重建索引 |
+| 检索 | 向量召回与 BM25 召回并行，RRF 融合，重排模型精排，质量判定不足时扩大召回重试 |
+| 问答 | SSE 流式输出，回答带 `[n]` 引用并可溯源到文档页码；可选查询改写与 HyDE |
+| 标签分类 | 入库后异步生成摘要、分类与标签；分类为受控词表，标签按规范化键去重 |
+| 提示词 | 内置模板可另存副本、设默认、重置；系统提示词、优化、解析、过滤、分块、标签、改写分类管理 |
+| 实验室 | 文本向量化、余弦相似度计算、分块策略对照、检索链路分步演示、术语与常见问题 |
+| 工程能力 | 统一错误码与可读提示、密钥加密存储与日志脱敏、SQLite 单一事实源 |
+
+## 技术栈
+
+- 后端：Python 3.11、FastAPI、SQLAlchemy 2（异步）、Pydantic v2
+- 编排：LangChain、LangGraph
+- 存储：SQLite（业务数据）、Chroma（向量库，可重建）
+- 前端：Vue 3、Vite、TypeScript、Element Plus、Pinia
+- 部署：Docker Compose（nginx + uvicorn）
+
+## 目录结构
 
 ```
-文档上传 → 解析成文字 → 过滤（原文规则／智能，可选）→ 切块（可预览可编辑）→ 向量化入库
-                                                                  ↓
-                                                    自动生成摘要 / 分类 / 标签
-                                                                  ↓
-提问 → 查询改写（可选）→ 向量召回 + 关键词召回 → RRF 融合 → 精排
-     → 质量判定（不够就扩召回重试）→ 调工具（算数/时间）→ 流式生成 → 引用溯源
+backend/
+  app/
+    api/         路由层
+    services/    业务逻辑：解析、分块、索引、检索、问答、标签、提示词
+    providers/   模型适配：LLM、Embedding、Rerank
+    graph/       LangGraph 图定义
+    workers/     异步任务队列
+    db/          数据模型与会话
+    core/        错误、日志、网络、安全、时间
+  tests/         单元测试
+frontend/
+  src/views/     页面
+  src/components 组件
+  src/api/       接口封装
+  src/stores/    状态管理
+samples/         示例文档
+scripts/         开发与运维脚本
 ```
-
-右侧常驻一个「执行过程」面板，上面每一步都会点亮，能看到检索命中了什么、
-用了哪几个模型、调了什么工具、花了多少毫秒。
-
----
 
 ## 快速开始
 
-### 1. 环境
-
-| 项 | 要求 |
-|---|---|
-| Python | **3.11**（3.14 装不上 chromadb，没有 wheel） |
-| Node | ≥ 20（本项目用 Node 24 验证） |
-| pnpm | ≥ 9 |
-| 内存 | 建议 ≥ 8GB（向量库与 BM25 索引都在内存里） |
-
-### 2. 装依赖
-
 ```powershell
-# 后端（conda 是推荐方式，venv 也行）
+# 1. 后端环境
 conda create -n rag311 python=3.11 -y
 conda activate rag311
 pip install -r backend/requirements.txt
 
-# 前端
+# 2. 前端依赖
 cd frontend
 pnpm install
-```
 
-### 3. 配置模型供应商
+# 3. 配置模型供应商：复制 .env.example 为 .env，填写三类服务的地址、密钥与模型名
+#    密钥写入数据库时使用 Fernet 加密，接口与日志仅返回打码结果
 
-复制 `.env.example` 为 `.env`（仓库里已有 `.env` 可参考），填三类供应商：
-
-```ini
-# 对话模型（任何 OpenAI 兼容服务都行）
-DEV_LLM_BASE_URL=https://your-gateway/v1
-DEV_LLM_API_KEY=sk-xxxx
-DEV_LLM_MODEL=你的模型名
-
-# 向量模型（必须支持 /embeddings）
-DEV_EMBED_BASE_URL=https://your-gateway/v1
-DEV_EMBED_API_KEY=sk-xxxx
-DEV_EMBED_MODEL=你的向量模型名
-
-# 重排模型（可选，不填就按融合分排序）
-DEV_RERANK_BASE_URL=https://your-gateway/compatible-mode/v1
-DEV_RERANK_API_KEY=sk-xxxx
-DEV_RERANK_MODEL=你的重排模型名
-```
-
-`.env` 只是**首次启动的种子**：启动时写入数据库（密钥用 Fernet 加密），
-之后以「模型供应商」页面里的配置为准。
-
-> ⚠️ **密钥安全**：`.env` 与 `data/.secret` 都在 `.gitignore` 里。
-> 接口只返回打码形式（`sk-8***7Hsd`），日志里也打码。
-
-### 4. 起服务
-
-```powershell
-# 后端（⚠️ 必须单进程，不要加 --workers）
+# 4. 启动
 cd backend
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000   # 单进程运行
 
-# 前端（另开一个终端）
 cd frontend
 pnpm dev
 ```
 
-- 前端 http://127.0.0.1:5173
-- 后端 http://127.0.0.1:8000/docs（Swagger，可直接试接口）
+访问 `http://127.0.0.1:5173`，后端接口文档位于 `http://127.0.0.1:8000/docs`。
 
-或者一条命令起两边：
+一键启动脚本：`powershell -File scripts/dev.ps1`。
 
-```powershell
-powershell -File scripts/dev.ps1
-```
-
-### 5. 用起来
-
-1. 打开「模型供应商」，三类各点一次「测试」，确认连通
-2. 打开「文档库」，拖一个文件进去
-3. 点「生成分块预览」，选策略（共 **7 种**：定长 / 递归 / 句子 / 段落 / 标题 / 父子块 / 语义）
-   和块大小；切之前可以打开「原文过滤」（纯规则，毫秒级）或「智能过滤」
-   （整篇只调 1 次模型，判断哪些行没有检索价值），看着顺眼就「确认入库」
-4. 入库完成后会自动排队打标签
-5. 打开「对话」提问，比如「住宿标准是多少」
-
----
-
-## Docker 部署
+## 部署
 
 ```powershell
 docker compose up --build
-# → http://127.0.0.1:8080
+# 访问 http://127.0.0.1:8080
 ```
 
-数据落在宿主机的 `./data`，删容器不丢数据。
+数据目录挂载至宿主机 `./data`。容器内后端以单进程运行。
 
-**已验证**（2026-11-26）：镜像构建、健康检查、页面（`/`、`/lab`）、接口（`/api/health`、
-`/api/kbs/1/stats`）以及 **SSE 流式对话**都从 8080 走通（`started → step → retrieval →
-delta → citations → done` 全收到，说明 nginx 的 SSE 关缓冲配置生效）。
+## 运行约束
 
-> **Docker 必须单进程**：Chroma 的嵌入式客户端底层是 SQLite，
-> 多进程同时打开会丢写入。这是本项目最容易踩的坑（见下）。
+- Chroma 采用嵌入式模式，底层为 SQLite，**同一数据目录不得被多个进程同时打开**；
+  后端须单进程运行，容器部署同理。
+- 更换向量模型后须重建索引；SQLite 为唯一事实源，向量可随时重建。
+- 系统不提供 OCR，扫描版 PDF 需先转换为可检索文本。
 
-> **基础镜像拉不下来时**：`registry-1.docker.io` 在国内经常连不上，表现为
-> `load metadata for docker.io/library/python:3.11-slim` 卡很久然后超时。
->
-> 本机装有代理 **`127.0.0.1:7890`**，Docker Desktop 走系统代理，
-> 代理开着时 `docker compose build` 能直接从 Docker Hub 拉（实测 `docker pull hello-world` 成功）。
-> 代理没开又急着构建时，才用国内镜像源拉下来再打回标准名字，Dockerfile 不用改：
->
-> ```powershell
-> docker pull docker.m.daocloud.io/library/python:3.11-slim
-> docker pull docker.m.daocloud.io/library/node:22-alpine
-> docker pull docker.m.daocloud.io/library/nginx:1.27-alpine
-> docker tag docker.m.daocloud.io/library/python:3.11-slim python:3.11-slim
-> docker tag docker.m.daocloud.io/library/node:22-alpine   node:22-alpine
-> docker tag docker.m.daocloud.io/library/nginx:1.27-alpine nginx:1.27-alpine
-> ```
->
-> 也可以给 Docker Desktop 配 `registry-mirrors`，一次配好永久生效。
+## 许可
 
----
-
-## 常见问题
-
-### 统计里 `vectors` 是 0，但分块明明入库了
-
-**Chroma 嵌入式库不能被多个进程同时打开。** 典型触发方式：
-
-- 一边跑 `uvicorn`，一边用另一个脚本 `chromadb.PersistentClient(path="data/chroma")`
-- 用 `sqlite3` **只读**打开 `data/chroma/chroma.sqlite3`（只读也会破坏）
-- 跑 `uvicorn --workers 2`
-- **跑 `pytest`** —— 以前有测试会真的去开 `data/chroma`（已修，见下）
-
-**排查**：先停后端，再确认目录干净，然后走页面上的「重建索引」。
-以后想查向量数量，只走 `GET /api/kbs/1/stats`，别碰那个 sqlite 文件。
-
-### 接口报「连接失败」，但网络明明是通的
-
-本项目所有 HTTP 客户端都设了 `trust_env=False`（不让 httpx / openai SDK 自己去读
-Windows 注册表里的系统代理），出口只认 `.env` 里的 `APP_HTTP_PROXY`，默认**直连**。
-
-本机现在有一个可用代理 **`127.0.0.1:7890`**：目标站点必须走代理时，在 `.env` 里加一行
-
-```ini
-APP_HTTP_PROXY=http://127.0.0.1:7890
-```
-
-重启后端即可（`ChatOpenAI` 也走这个出口，见 `core/net.py`）。
-排查口诀：`curl --noproxy '*' <url>` 与 `curl --proxy http://127.0.0.1:7890 <url>`
-各试一次，哪个通用哪个。
-
-### 时间显示早了 8 小时
-
-已修。根因是 SQLite 的 `DateTime(timezone=True)` 不保存时区，
-接口返回的 ISO 串不带 `Z`，浏览器按本地时区解析。
-现在所有时间序列化都带 `Z`（见 `core/timeutil.py`）。
-
-### 模型算数算错了
-
-模型算数不可靠是**机制问题**（按 token 概率生成），不是它「不够聪明」。
-本项目内置了 `calculator` 工具（`Decimal` 精确算术），并且：
-当问题里有算术信号、模型却没调工具时，**代码会强制补一轮**逼它调。
-所以你会看到轨迹面板里出现「工具调用」这一步。
-
-### 点「✨优化」提示「优化服务暂时不可用」
-
-两种原因，都不是你操作错了：
-
-1. **已修的老 bug**：网关要求请求里必须带一条 system 消息，而早期代码直接
-   `ainvoke("一段话")`，只会发 user 一条 → 网关一律回 400。现在统一由
-   `providers/llm.py::invoke_prompt` 包成 system + user（`tests/test_llm_invoke.py` 守着）。
-2. **网关成片抖动**：这个网关会间歇性地连续返回 `400 upstream_error`，几分钟后自己恢复。
-   代码会短重试 1–2 次，仍失败就按设计退回原问题并写明原因 —— 等几分钟再点一次即可。
-
-想确认是哪种：看后端日志里有没有 `400 ... upstream_error`。
-
-### PDF 上传后没有内容
-
-可能是**扫描件**（图片版 PDF）。本项目**不做 OCR**，
-需要先用其他工具转成文字版再上传。系统会明确提示你这一点。
-
-### 实验室里同一段文本点第二次，为什么快得不像在算
-
-不是没算，是命中了缓存。向量化结果按 `sha256(模型::文本)` 缓存进 `embedding_cache` 表，
-第二次直接读库，响应里 `cached: true`，后端也不会再调供应商接口。
-实测「差旅报销需要提交发票」：首次 0.22s（真调接口）→ 再点 0.03s（命中缓存）。
-余弦相似度计算器同理，左右两侧各自命中缓存。
-
-### 改了提示词，效果变差了
-
-提示词库里的**内置模板是只读的**。要改请先「另存为副本」，
-再把副本设为默认。改坏了可以「重置」回内置原文，
-或直接把默认切回内置那条。
-
----
-
-## 项目结构
-
-```
-backend/app/
-  api/        路由层（薄）：providers documents chunk_samples chat jobs tags prompts lab
-  services/   业务层（厚）：parsing chunking documents indexing retrieval chat
-              tagging tools prompts promptopt model_choice llm_parse tokenizer
-              filtering lab
-  workers/    asyncio 任务队列：queue handlers
-  providers/  模型适配：base（三协议）embed llm registry
-  graph/      LangGraph 图：state nodes build
-  core/       errors（含统一文案）logging net security timeutil
-  db/         models session seed
-frontend/src/
-  views/      Dashboard Documents DocumentDetail Chat Providers Prompts Settings Lab
-  components/ TracePanel StrategySampleModal
-              lab/  AnglePlot ChunkColumn GlossaryCard KnowledgeBase RerankFlow
-                    VectorBar VectorHeat + terms.ts questions.ts（术语与面试题词条）
-  api/        每个接口一个文件，组件里禁止直接 fetch：
-              http providers documents chat jobs tags prompts markdown lab
-  stores/     Pinia：一个 store 一个业务域（docs providers ui）
-docs/         DESIGN.md MILESTONES.md HANDOVER.md M4-PLAN.md
-scripts/      dev.ps1 reset.ps1 migrate.py migrate_20261126_system_prompt_tools.py
-              make_sample_pdf.py compare_strategies.py
-```
-
-依赖方向是**单向**的：`api → services → (providers | db | graph)`。
-反向 import 一律禁止。
-
----
-
-## 开发约定
-
-完整规范见 `AGENTS.md`，几条硬性的：
-
-- **不擅自升级依赖**。Lock 在 `backend/requirements.txt` 与 `frontend/package.json`。
-- **不用 `print`**，一律 `logger`。
-- **密钥不进日志、不进响应**。
-- **不信任模型的 JSON 输出**，必须过 Schema 校验 + 失败回退。
-- **不做假实现**（例如 rerank 直接返回原顺序）。
-
-```powershell
-# 提交前自查
-cd backend
-ruff check .
-ruff format --check .
-pytest            # 不要加 -q：pyproject 里已有 -q，再加会吞掉「432 passed」这行汇总
-
-cd ../frontend
-pnpm build        # 含 vue-tsc 类型检查
-```
-
----
-
-## 已经做到哪一步
-
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| M0 | 供应商配置、UI 骨架 | ✅ |
-| M1 | 文档解析与分块（**7 种**策略：定长 / 递归 / 句子 / 段落 / 标题 / 父子块 / 语义）、过滤、预览编辑器、确认入库 | ✅ |
-| M2 | 混合检索 + 对话 + 引用溯源 + 轨迹面板 | ✅ |
-| M3 | 异步任务队列、标签分类、内置工具、提示词库、设置页、错误文案 | ✅ |
-| M3 | Docker Compose + README（构建、启动、接口、SSE 均实测通过） | ✅ |
-| M4 | RAG 实验室 `/lab`：文本→向量、余弦相似度计算器、分块实验台、检索链路演示、术语与面试题，**共 5 个 Tab** | ✅ |
-
-当前质量门（本轮实测）：
-
-- `pytest` **432 passed**（20 个测试文件；别再加 `-q`，`pyproject.toml` 里已有 `-q`，再加会吞掉汇总行）
-- `ruff check .` 干净、`ruff format --check .` 83 files already formatted
-- `pnpm build`（含 `vue-tsc` 类型检查）通过
-- 后端共 **47 条**路由（`/docs` 里可逐条试）
-
-细节与踩坑记录见 `docs/MILESTONES.md` 与 `docs/HANDOVER.md`。
-**HANDOVER 的「踩过的坑」那一节最值钱**，动手前建议先读一遍。
-
----
-
-## 文档
-
-| 文件 | 内容 |
-|---|---|
-| [docs/DESIGN.md](docs/DESIGN.md) | 设计文档：范围、数据模型、核心流程、接口清单 |
-| [docs/MILESTONES.md](docs/MILESTONES.md) | 任务清单与进度 |
-| [docs/HANDOVER.md](docs/HANDOVER.md) | 交接文档，含 20 条踩坑记录 |
-| [docs/M4-PLAN.md](docs/M4-PLAN.md) | RAG 实验室的实施计划与验收标准 |
-| [AGENTS.md](AGENTS.md) | 开发规范（强制约束） |
+MIT License，详见 `LICENSE`。
