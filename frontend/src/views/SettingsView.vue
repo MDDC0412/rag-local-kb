@@ -34,6 +34,26 @@ const dirty = computed(() =>
   SETTING_META.some((item) => (form[item.key] ?? '') !== (defaults.value[item.key] ?? '')),
 )
 
+/** 数字显示用：去掉 0.3499999940395355 这类浮点尾巴。
+
+    用 type="text" + inputmode="decimal" 而不是 type="number"：
+    number 输入框在部分浏览器里会把 value 规范化成 double 再回显，
+    这就是「0.35 显示成 0.3499999940395355」的来源。
+*/
+function shownNumber(key: string): string {
+  const raw = (form[key] ?? '').trim()
+  const value = Number(raw)
+  if (!Number.isFinite(value)) return raw
+  if (Number.isInteger(value)) return String(value)
+  // 阈值这类 0~1 的小数保留两位
+  return value.toFixed(2).replace(/\.?0+$/, '')
+}
+
+/** 输入框改动时写回表单（保留用户输入，不做四舍五入）。 */
+function setNumber(key: string, event: Event) {
+  form[key] = (event.target as HTMLInputElement).value
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -49,6 +69,26 @@ async function load() {
 }
 
 async function save() {
+  // 数字项先校验：text 输入框没有浏览器原生 min/max 保护，得自己把关
+  for (const item of SETTING_META) {
+    if (item.type !== 'number') continue
+    const raw = (form[item.key] ?? '').trim()
+    const value = Number(raw)
+    if (!Number.isFinite(value)) {
+      error.value = `「${item.label}」必须是数字`
+      return
+    }
+    if (item.min !== undefined && value < item.min) {
+      error.value = `「${item.label}」不能小于 ${item.min}`
+      return
+    }
+    if (item.max !== undefined && value > item.max) {
+      error.value = `「${item.label}」不能大于 ${item.max}`
+      return
+    }
+    form[item.key] = String(value)
+  }
+
   saving.value = true
   error.value = ''
   notice.value = ''
@@ -105,11 +145,11 @@ onMounted(load)
             <div class="row-control">
               <input
                 v-if="item.type === 'number'"
-                v-model="form[item.key]"
-                type="number"
-                :min="item.min"
-                :max="item.max"
+                :value="shownNumber(item.key)"
+                type="text"
+                inputmode="decimal"
                 class="mono-input num-input"
+                @input="setNumber(item.key, $event)"
               />
               <select v-else-if="item.type === 'select'" v-model="form[item.key]">
                 <option v-for="opt in item.options ?? []" :key="opt.value" :value="opt.value">
