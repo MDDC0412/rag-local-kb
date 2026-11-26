@@ -14,6 +14,10 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+# pytest 在工作区根留下的一次性缓存目录（本次清理由此产生）
+pytest-cache-files-*/
+.coverage
+htmlcov/
 
 # ---- node ----
 node_modules/
