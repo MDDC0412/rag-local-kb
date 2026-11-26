@@ -124,9 +124,12 @@ delta → citations → done` 全收到，说明 nginx 的 SSE 关缓冲配置�
 > **Docker 必须单进程**：Chroma 的嵌入式客户端底层是 SQLite，
 > 多进程同时打开会丢写入。这是本项目最容易踩的坑（见下）。
 
-> **拉不到基础镜像时**：`registry-1.docker.io` 在国内经常连不上，表现为
+> **基础镜像拉不下来时**：`registry-1.docker.io` 在国内经常连不上，表现为
 > `load metadata for docker.io/library/python:3.11-slim` 卡很久然后超时。
-> 先用国内镜像源拉下来，再打成标准名字即可，Dockerfile 不用改：
+>
+> 本机装有代理 **`127.0.0.1:7890`**，Docker Desktop 走系统代理，
+> 代理开着时 `docker compose build` 能直接从 Docker Hub 拉（实测 `docker pull hello-world` 成功）。
+> 代理没开又急着构建时，才用国内镜像源拉下来再打回标准名字，Dockerfile 不用改：
 >
 > ```powershell
 > docker pull docker.m.daocloud.io/library/python:3.11-slim
@@ -137,7 +140,7 @@ delta → citations → done` 全收到，说明 nginx 的 SSE 关缓冲配置�
 > docker tag docker.m.daocloud.io/library/nginx:1.27-alpine nginx:1.27-alpine
 > ```
 >
-> 更省事的做法是给 Docker Desktop 配 `registry-mirrors`，一次配好永久生效。
+> 也可以给 Docker Desktop 配 `registry-mirrors`，一次配好永久生效。
 
 ---
 
@@ -157,10 +160,18 @@ delta → citations → done` 全收到，说明 nginx 的 SSE 关缓冲配置�
 
 ### 接口报「连接失败」，但网络明明是通的
 
-Windows 注册表里的系统代理可能是坏的。本项目所有 HTTP 客户端都设了
-`trust_env=False`，只认 `.env` 里的 `APP_HTTP_PROXY`（默认直连）。
+本项目所有 HTTP 客户端都设了 `trust_env=False`（不让 httpx / openai SDK 自己去读
+Windows 注册表里的系统代理），出口只认 `.env` 里的 `APP_HTTP_PROXY`，默认**直连**。
 
-排查口诀：先用 `curl --noproxy '*'` 试直连，能通就说明是代理问题。
+本机现在有一个可用代理 **`127.0.0.1:7890`**：目标站点必须走代理时，在 `.env` 里加一行
+
+```ini
+APP_HTTP_PROXY=http://127.0.0.1:7890
+```
+
+重启后端即可（`ChatOpenAI` 也走这个出口，见 `core/net.py`）。
+排查口诀：`curl --noproxy '*' <url>` 与 `curl --proxy http://127.0.0.1:7890 <url>`
+各试一次，哪个通用哪个。
 
 ### 时间显示早了 8 小时
 
