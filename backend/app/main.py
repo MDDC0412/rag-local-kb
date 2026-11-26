@@ -14,6 +14,7 @@ from app.api import chat as chat_api
 from app.api import chunk_samples as chunk_samples_api
 from app.api import documents as documents_api
 from app.api import jobs as jobs_api
+from app.api import prompts as prompts_api
 from app.api import providers as providers_api
 from app.api import tags as tags_api
 from app.config import get_settings
@@ -124,3 +125,4 @@ app.include_router(chunk_samples_api.router)
 app.include_router(chat_api.router)
 app.include_router(jobs_api.router)
 app.include_router(tags_api.router)
+app.include_router(prompts_api.router)

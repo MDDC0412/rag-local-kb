@@ -32,6 +32,12 @@ const routes = [
     meta: { title: '对话' },
   },
   {
+    path: '/prompts',
+    name: 'prompts',
+    component: () => import('@/views/PromptsView.vue'),
+    meta: { title: '提示词库' },
+  },
+  {
     path: '/lab',
     name: 'lab',
     component: () => import('@/views/PlaceholderView.vue'),
@@ -40,8 +46,8 @@ const routes = [
   {
     path: '/settings',
     name: 'settings',
-    component: () => import('@/views/PlaceholderView.vue'),
-    meta: { title: '设置', index: '06', milestone: 'M3' },
+    component: () => import('@/views/SettingsView.vue'),
+    meta: { title: '设置', index: '06' },
   },
 ]
 

@@ -11,8 +11,9 @@ const nav = [
   { to: '/providers', title: '模型供应商' },
   { to: '/documents', title: '文档库' },
   { to: '/chat', title: '对话' },
+  { to: '/prompts', title: '提示词库' },
   { to: '/lab', title: 'RAG 实验室', milestone: 'M4' },
-  { to: '/settings', title: '设置', milestone: 'M3' },
+  { to: '/settings', title: '设置' },
 ]
 
 const currentTitle = computed(() => (route.meta.title as string) ?? '')
