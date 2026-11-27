@@ -2,12 +2,15 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useChatStore } from '@/stores/chat'
+import { useJobsStore } from '@/stores/jobs'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const route = useRoute()
 // 对话状态在 store 里，切页也活着：侧栏据此提示"后台还在生成"
 const chat = useChatStore()
+// 后台任务（入库/重建/打标签）也在 store 里跑：顶栏提示有几个在跑
+const jobs = useJobsStore()
 
 const nav = [
   { to: '/', title: '总览' },
@@ -59,6 +62,9 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
     <div class="main">
       <header class="topbar">
         <h1 class="topbar-title">{{ currentTitle }}</h1>
+        <span v-if="jobs.runningCount" class="topbar-task">
+          后台任务 {{ jobs.runningCount }} 个进行中
+        </span>
       </header>
 
       <main class="content">
@@ -206,6 +212,34 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
 .topbar-title {
   font-size: 15px;
   font-weight: 600;
+}
+
+/* 后台任务提示：切页不中断，但要让用户知道还有活在跑 */
+.topbar-task {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+.topbar-task::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: task-pulse 1.4s var(--ease) infinite;
+}
+@keyframes task-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .content {

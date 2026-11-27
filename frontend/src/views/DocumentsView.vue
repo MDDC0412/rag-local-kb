@@ -8,18 +8,24 @@ import {
   formatSize,
   type DocumentItem,
 } from '@/api/documents'
-import { isActive, jobsApi, type Job } from '@/api/jobs'
 import { tagsApi } from '@/api/tags'
 import { useDocsStore } from '@/stores/docs'
+import { useJobsStore } from '@/stores/jobs'
 
 const store = useDocsStore()
+/** 打标签是后台任务：跟踪放在 store 里，切页回来「生成中」还在。 */
+const jobs = useJobsStore()
 const router = useRouter()
 
 const dragging = ref(false)
-const notice = ref<{ tone: 'ok' | 'warn' | 'bad'; text: string } | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
-/** 正在打标签的文档 id（按钮转圈用）。 */
-const tagging = ref<number | null>(null)
+/** 正在打标签的文档 id（按钮转圈用）：以 store 里运行中的 tag 任务为准。 */
+const tagging = computed<number | null>(() => {
+  const job = jobs.running.find(
+    (item) => item.type === 'tag' && store.items.some((doc) => doc.id === item.target_id),
+  )
+  return job?.target_id ?? null
+})
 
 const stats = computed(() => [
   { label: '文档', value: store.stats.documents },
@@ -88,25 +94,7 @@ function pickFiles() {
 
 async function handleFiles(files: FileList | null) {
   if (!files || !files.length) return
-  notice.value = null
-  const list = Array.from(files)
-
-  try {
-    const result = await store.upload(list)
-    const parts: string[] = []
-    if (result.documents.length) parts.push(`已上传 ${result.documents.length} 个`)
-    if (result.duplicates.length) parts.push(`跳过重复 ${result.duplicates.length} 个`)
-    if (result.warnings.length) parts.push(result.warnings.length + ' 条提示')
-    notice.value = {
-      tone: result.warnings.length ? 'warn' : 'ok',
-      text: parts.join('，') || '没有文件被处理',
-    }
-    if (result.warnings.length) {
-      notice.value.text += '：' + result.warnings.join('；')
-    }
-  } catch (e) {
-    notice.value = { tone: 'bad', text: (e as Error).message }
-  }
+  await store.upload(Array.from(files))
 }
 
 function onDrop(event: DragEvent) {
@@ -127,60 +115,32 @@ function openDetail(doc: DocumentItem) {
   router.push(`/documents/${doc.id}`)
 }
 
-/** 手动触发打标签，轮询到结束再刷新列表。 */
+/** 手动触发打标签：入队后交给全局任务 store 跟踪，切页也不会断。 */
 async function tagDoc(doc: DocumentItem, event: Event) {
   event.stopPropagation()
-  notice.value = null
-  tagging.value = doc.id
+  store.notice = null
   try {
     const result = await tagsApi.tag(doc.id)
-    await pollTag(result.job)
+    await jobs.track(result.job)
   } catch (e) {
-    notice.value = { tone: 'bad', text: (e as Error).message }
-    tagging.value = null
+    store.notice = { tone: 'bad', text: (e as Error).message }
   }
 }
 
-/**
- * 跟踪打标签任务直到结束。
- *
- * 轮询只影响界面：切到别的页面时任务还在后端跑，
- * 回来时 resumeTagging() 会把它接回来，按钮才继续显示「生成中」。
- */
-async function pollTag(job: Job): Promise<void> {
-  tagging.value = job.target_id
-  let latest = job
-  try {
-    for (let attempt = 0; attempt < 60 && isActive(latest); attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 1000))
-      latest = await jobsApi.get(job.id)
-    }
-    await store.load()
-    if (latest.status === 'failed') {
-      notice.value = { tone: 'bad', text: latest.error_msg || '打标签失败，可以再试一次' }
-      return
-    }
-    notice.value = { tone: 'ok', text: '已生成摘要、分类和标签' }
-  } catch (e) {
-    notice.value = { tone: 'bad', text: (e as Error).message }
-  } finally {
-    tagging.value = null
-  }
-}
-
-/** 回到本页时，把还在跑的打标签任务接回来（否则「生成中」会随页面一起消失）。 */
-async function resumeTagging(): Promise<void> {
-  try {
-    const rows = await jobsApi.list({ limit: 20 })
-    const running = rows.find(
-      (job) =>
-        job.type === 'tag' && isActive(job) && store.items.some((doc) => doc.id === job.target_id),
-    )
-    if (running) await pollTag(running)
-  } catch {
-    // 拉不到任务不影响列表本身
-  }
-}
+/** 任务结束时给一句结果提示，并刷新列表（标签/状态都变了）。 */
+watch(
+  () => jobs.lastFinished,
+  (job) => {
+    if (!job) return
+    const visible = store.items.some((doc) => doc.id === job.target_id)
+    if (job.type !== 'tag' || !visible) return
+    store.notice =
+      job.status === 'failed'
+        ? { tone: 'bad', text: job.error_msg || '打标签失败，可以再试一次' }
+        : { tone: 'ok', text: '已生成摘要、分类和标签' }
+    void store.load()
+  },
+)
 
 function formatDate(value: string): string {
   const d = new Date(value)
@@ -192,7 +152,8 @@ function formatDate(value: string): string {
 
 onMounted(async () => {
   await store.load()
-  void resumeTagging()
+  // 还在跑的打标签任务由全局 store 接着轮询，列表上的「生成中」不用重进页面等
+  void jobs.syncAll()
 })
 </script>
 
@@ -227,7 +188,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <p v-if="notice" class="notice" :class="notice.tone">{{ notice.text }}</p>
+    <p v-if="store.notice" class="notice" :class="store.notice.tone">{{ store.notice.text }}</p>
     <p v-if="store.error" class="notice bad">{{ store.error }}</p>
 
     <!-- 统计 -->

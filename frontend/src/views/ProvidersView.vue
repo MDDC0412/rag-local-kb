@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ApiError } from '@/api/http'
 import {
   KIND_LABEL,
@@ -16,6 +17,8 @@ import {
 import { useProvidersStore } from '@/stores/providers'
 
 const store = useProvidersStore()
+/** 「测试连接」结果在 store 里：切页回来还在，不用重测一遍（测试要发网络请求）。 */
+const { testState } = storeToRefs(store)
 
 const kinds: ProviderKind[] = ['llm', 'embedding', 'rerank']
 
@@ -48,7 +51,6 @@ const form = reactive<ProviderDraft>({
   is_default: false,
 })
 
-const testState = ref<Record<number, { loading: boolean; result?: TestResult; error?: string }>>({})
 const draftTest = reactive<{ loading: boolean; result?: TestResult; error: string }>({
   loading: false,
   result: undefined,
@@ -130,13 +132,7 @@ async function save() {
 }
 
 async function runTest(id: number) {
-  testState.value[id] = { loading: true }
-  try {
-    const result = await providerApi.test(id)
-    testState.value[id] = { loading: false, result }
-  } catch (e) {
-    testState.value[id] = { loading: false, error: (e as Error).message }
-  }
+  await store.runTest(id)
 }
 
 async function runDraftTest() {

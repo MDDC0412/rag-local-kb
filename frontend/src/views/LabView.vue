@@ -6,20 +6,16 @@
  * - 优先「看得懂」：每个数字旁边都有人话解释，公式里填的是真实数字
  * - 分步展开：Tab④ 的四段是依次出现的，不是一次性甩结果
  * - 不堆功能：默认值就给好，用户点一下就能看到效果
+ *
+ * 实验状态（参数、进行中、结果）都在 useLabStore 里：这四个实验都要真调模型，
+ * 切到别的页面回来结果不能丢 —— 丢了等于白花一次钱。视图只负责显示。
  */
 
 import { computed, onMounted, ref } from 'vue'
-import { ApiError } from '@/api/http'
-import {
-  PRESET_PAIRS,
-  labApi,
-  type ChunkLabResult,
-  type EmbedResult,
-  type Overview,
-  type PresetPair,
-  type RetrieveResult,
-  type SimilarityResult,
-} from '@/api/lab'
+import { storeToRefs } from 'pinia'
+import { errorMessage } from '@/api/http'
+import { PRESET_PAIRS, labApi, type Overview, type PresetPair } from '@/api/lab'
+import { useLabStore } from '@/stores/lab'
 import AnglePlot from '@/components/lab/AnglePlot.vue'
 import ChunkColumn from '@/components/lab/ChunkColumn.vue'
 import GlossaryCard from '@/components/lab/GlossaryCard.vue'
@@ -27,6 +23,38 @@ import KnowledgeBase from '@/components/lab/KnowledgeBase.vue'
 import RerankFlow from '@/components/lab/RerankFlow.vue'
 import VectorBar from '@/components/lab/VectorBar.vue'
 import VectorHeat from '@/components/lab/VectorHeat.vue'
+
+const lab = useLabStore()
+const {
+  activeTab,
+  activeAnchor,
+  embedText,
+  embedLoading,
+  embedError,
+  embedResult,
+  textA,
+  textB,
+  simLoading,
+  simError,
+  simResult,
+  chunkText,
+  chunkSize,
+  chunkOverlap,
+  semanticThreshold,
+  chunkLoading,
+  chunkError,
+  chunkResult,
+  collapsedColumns,
+  retrieveQuery,
+  retrieveKbId,
+  retrieveTopN,
+  retrieveRerankTopN,
+  useRerank,
+  retrieveLoading,
+  retrieveError,
+  retrieveResult,
+  revealedStage,
+} = storeToRefs(lab)
 
 // --------------------------------------------------------------------------- //
 // 页面骨架
@@ -41,9 +69,6 @@ const TABS: Array<{ key: TabKey; index: string; title: string; subtitle: string 
   { key: 'knowledge', index: '05', title: '术语与面试题', subtitle: '名词解释 + 常见追问' },
 ]
 
-const activeTab = ref<TabKey>('embed')
-const activeAnchor = ref('')
-
 const overview = ref<Overview | null>(null)
 const bootError = ref('')
 
@@ -51,13 +76,8 @@ async function loadOverview() {
   try {
     overview.value = await labApi.overview()
   } catch (e) {
-    bootError.value = messageOf(e)
+    bootError.value = errorMessage(e)
   }
-}
-
-function messageOf(e: unknown): string {
-  if (e instanceof ApiError) return e.message
-  return (e as Error).message || '请求失败'
 }
 
 /** 术语卡点词条 → 高亮对应区块 */
@@ -77,28 +97,6 @@ onMounted(loadOverview)
 // --------------------------------------------------------------------------- //
 // Tab ① 文本 → 向量
 // --------------------------------------------------------------------------- //
-const embedText = ref('差旅报销需要提交发票')
-const embedLoading = ref(false)
-const embedError = ref('')
-const embedResult = ref<EmbedResult | null>(null)
-
-async function runEmbed() {
-  if (!embedText.value.trim()) {
-    embedError.value = '先输入一段文字'
-    return
-  }
-  embedLoading.value = true
-  embedError.value = ''
-  try {
-    embedResult.value = await labApi.embed(embedText.value)
-  } catch (e) {
-    embedError.value = messageOf(e)
-    embedResult.value = null
-  } finally {
-    embedLoading.value = false
-  }
-}
-
 /** token 方块：半个字单独标注，这正是"中文被拆开"的画面 */
 const tokenView = computed(() => {
   const tokens = embedResult.value?.tokens ?? []
@@ -112,35 +110,6 @@ const tokenView = computed(() => {
 // --------------------------------------------------------------------------- //
 // Tab ② 余弦相似度
 // --------------------------------------------------------------------------- //
-const textA = ref('苹果手机')
-const textB = ref('iPhone')
-const simLoading = ref(false)
-const simError = ref('')
-const simResult = ref<SimilarityResult | null>(null)
-
-async function runSimilarity() {
-  if (!textA.value.trim() || !textB.value.trim()) {
-    simError.value = '两个输入框都要填'
-    return
-  }
-  simLoading.value = true
-  simError.value = ''
-  try {
-    simResult.value = await labApi.similarity(textA.value, textB.value)
-  } catch (e) {
-    simError.value = messageOf(e)
-    simResult.value = null
-  } finally {
-    simLoading.value = false
-  }
-}
-
-function usePair(pair: PresetPair) {
-  textA.value = pair.a
-  textB.value = pair.b
-  runSimilarity()
-}
-
 /** 点积分步展示用的前 5 项 */
 const sampleView = computed(() => simResult.value?.samples ?? [])
 
@@ -152,49 +121,6 @@ function verdictColor(color: string): string {
 // --------------------------------------------------------------------------- //
 // Tab ③ 分块实验台
 // --------------------------------------------------------------------------- //
-const DEFAULT_CHUNK_TEXT =
-  '差旅报销管理办法。员工出差应遵循先审批、后出差的原则。未经审批产生的费用，公司不予报销。' +
-  '员工应在出差结束后五个工作日内提交报销申请。逾期未提交的，须说明原因；超过三十日的，原则上不予受理。' +
-  '一线城市每晚上限六百元，二线城市每晚上限四百五十元，其他城市每晚上限四百元。' +
-  '报销须提交增值税发票原件、出差审批单打印件、行程单或登机牌，以及住宿费明细清单。' +
-  '财务部在收到完整材料后的十个工作日内完成审核与打款。' +
-  '单笔报销金额两千元以下的由部门经理审批，两千元至一万元的由部门经理与财务总监共同审批。'
-
-const chunkText = ref(DEFAULT_CHUNK_TEXT)
-const chunkSize = ref(120)
-const chunkOverlap = ref(16)
-const semanticThreshold = ref(0.55)
-const chunkLoading = ref(false)
-const chunkError = ref('')
-const chunkResult = ref<ChunkLabResult | null>(null)
-const collapsedColumns = ref<Record<string, boolean>>({ recursive: true, semantic: true })
-
-async function runChunk() {
-  if (!chunkText.value.trim()) {
-    chunkError.value = '先粘贴一段文字'
-    return
-  }
-  chunkLoading.value = true
-  chunkError.value = ''
-  try {
-    chunkResult.value = await labApi.chunk({
-      text: chunkText.value,
-      chunk_size: chunkSize.value,
-      overlap: Math.min(chunkOverlap.value, chunkSize.value - 1),
-      semantic_threshold: semanticThreshold.value,
-    })
-  } catch (e) {
-    chunkError.value = messageOf(e)
-    chunkResult.value = null
-  } finally {
-    chunkLoading.value = false
-  }
-}
-
-function toggleColumn(strategy: string) {
-  collapsedColumns.value[strategy] = !collapsedColumns.value[strategy]
-}
-
 /** 语义栏要调模型，先给用户看"这一步会花钱" */
 const semanticCost = computed(() => {
   const chars = chunkText.value.length
@@ -204,54 +130,6 @@ const semanticCost = computed(() => {
 // --------------------------------------------------------------------------- //
 // Tab ④ 检索链路
 // --------------------------------------------------------------------------- //
-const retrieveQuery = ref('住宿标准是多少')
-const retrieveKbId = ref(1)
-const retrieveTopN = ref(10)
-const retrieveRerankTopN = ref(5)
-const useRerank = ref(true)
-const retrieveLoading = ref(false)
-const retrieveError = ref('')
-const retrieveResult = ref<RetrieveResult | null>(null)
-
-/** 分步展开：四段依次出现，而不是一次性甩结果 */
-const revealedStage = ref(0)
-
-async function runRetrieve() {
-  if (!retrieveQuery.value.trim()) {
-    retrieveError.value = '先输入一个问题'
-    return
-  }
-  retrieveLoading.value = true
-  retrieveError.value = ''
-  revealedStage.value = 0
-  try {
-    const result = await labApi.retrieve({
-      query: retrieveQuery.value,
-      kb_id: retrieveKbId.value,
-      vector_top_n: retrieveTopN.value,
-      bm25_top_n: retrieveTopN.value,
-      rerank_top_n: retrieveRerankTopN.value,
-      use_rerank: useRerank.value,
-    })
-    retrieveResult.value = result
-    // 结果一次拿到，但按节奏依次展开，用户能看清"先有什么、后有什么"
-    for (let stage = 1; stage <= 4; stage += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 220))
-      revealedStage.value = stage
-    }
-  } catch (e) {
-    retrieveError.value = messageOf(e)
-    retrieveResult.value = null
-  } finally {
-    retrieveLoading.value = false
-  }
-}
-
-function usePreset(query: string) {
-  retrieveQuery.value = query
-  runRetrieve()
-}
-
 function stageVisible(stage: number): boolean {
   return revealedStage.value >= stage
 }
@@ -307,9 +185,9 @@ function rrfValues(terms: Array<{ value: number }>): string {
               class="embed-input"
               rows="2"
               placeholder="输入一段中文，比如：差旅报销需要提交发票"
-              @keydown.ctrl.enter="runEmbed"
+              @keydown.ctrl.enter="lab.runEmbed()"
             />
-            <button class="btn btn-primary" :disabled="embedLoading" @click="runEmbed">
+            <button class="btn btn-primary" :disabled="embedLoading" @click="lab.runEmbed()">
               {{ embedLoading ? '向量化中…' : '向量化' }}
             </button>
           </div>
@@ -413,13 +291,13 @@ function rrfValues(terms: Array<{ value: number }>): string {
           <div class="pair-inputs">
             <div class="field">
               <label>A</label>
-              <input v-model="textA" type="text" placeholder="第一段文字" @keydown.enter="runSimilarity" />
+              <input v-model="textA" type="text" placeholder="第一段文字" @keydown.enter="lab.runSimilarity()" />
             </div>
             <div class="field">
               <label>B</label>
-              <input v-model="textB" type="text" placeholder="第二段文字" @keydown.enter="runSimilarity" />
+              <input v-model="textB" type="text" placeholder="第二段文字" @keydown.enter="lab.runSimilarity()" />
             </div>
-            <button class="btn btn-primary pair-btn" :disabled="simLoading" @click="runSimilarity">
+            <button class="btn btn-primary pair-btn" :disabled="simLoading" @click="lab.runSimilarity()">
               {{ simLoading ? '计算中…' : '计算' }}
             </button>
           </div>
@@ -432,7 +310,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
               :key="pair.a + pair.b"
               class="btn btn-sm preset-btn"
               :title="pair.why"
-              @click="usePair(pair)"
+              @click="lab.usePair(pair)"
             >
               {{ pair.a }} / {{ pair.b }}
               <span class="preset-expect">预期{{ pair.expect }}</span>
@@ -553,7 +431,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
               <label>语义阈值 <b class="num">{{ semanticThreshold.toFixed(2) }}</b></label>
               <input v-model.number="semanticThreshold" type="range" min="0.2" max="0.9" step="0.05" />
             </div>
-            <button class="btn btn-primary" :disabled="chunkLoading" @click="runChunk">
+            <button class="btn btn-primary" :disabled="chunkLoading" @click="lab.runChunk()">
               {{ chunkLoading ? '切分中…' : '切一遍' }}
             </button>
           </div>
@@ -575,7 +453,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
                 :key="column.strategy"
                 :column="column"
                 :collapsed="collapsedColumns[column.strategy] ?? true"
-                @toggle="toggleColumn(column.strategy)"
+                @toggle="lab.toggleColumn(column.strategy)"
               />
             </div>
           </template>
@@ -601,9 +479,9 @@ function rrfValues(terms: Array<{ value: number }>): string {
               type="text"
               class="retrieve-input"
               placeholder="输入一个问题，或用下面的预设"
-              @keydown.enter="runRetrieve"
+              @keydown.enter="lab.runRetrieve()"
             />
-            <button class="btn btn-primary" :disabled="retrieveLoading" @click="runRetrieve">
+            <button class="btn btn-primary" :disabled="retrieveLoading" @click="lab.runRetrieve()">
               {{ retrieveLoading ? '演示中…' : '演示' }}
             </button>
           </div>
@@ -614,7 +492,7 @@ function rrfValues(terms: Array<{ value: number }>): string {
               v-for="preset in overview?.preset_queries ?? []"
               :key="preset.query"
               class="btn btn-sm preset-btn"
-              @click="usePreset(preset.query)"
+              @click="lab.usePreset(preset.query)"
             >
               {{ preset.label }}
             </button>

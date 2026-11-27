@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   STATUS_LABEL,
@@ -9,7 +9,6 @@ import {
   type ChunkItem,
   type ChunkStrategy,
   type DocumentDetail,
-  type FilterPreview,
   type PageItem,
   type PreviewResult,
   type StrategyMeta,
@@ -18,10 +17,16 @@ import {
 import { JOB_LABEL, isActive, jobsApi, type Job } from '@/api/jobs'
 import { tagsApi } from '@/api/tags'
 import StrategySampleModal from '@/components/StrategySampleModal.vue'
+import { useDocsStore } from '@/stores/docs'
+import { useJobsStore } from '@/stores/jobs'
 
 const route = useRoute()
 const router = useRouter()
 const docId = Number(route.params.id)
+
+const docs = useDocsStore()
+/** 后台任务（入库/重建/打标签）的进度与结果都在这里，切页也不会断。 */
+const jobs = useJobsStore()
 
 const detail = ref<DocumentDetail | null>(null)
 const pages = ref<PageItem[]>([])
@@ -34,13 +39,33 @@ const loading = ref(false)
 const busy = ref('')
 const error = ref('')
 const notice = ref('')
-/** 当前正在跟踪的后台任务（入库/重建），null 表示没有在跑。 */
-const activeJob = ref<Job | null>(null)
-let pollTimer: number | null = null
+/** 页面上显示哪条任务：默认跟最近一次入队的（进度条与结果都读 store）。 */
+const shownJobId = ref<number | null>(null)
+const activeJob = computed<Job | null>(() =>
+  shownJobId.value === null ? null : (jobs.byId[shownJobId.value] ?? null),
+)
+/** 当前是否有后台任务在跑（切页回来也要恢复成「进行中」的样子）。 */
+const jobRunning = computed(() => (activeJob.value ? isActive(activeJob.value) : false))
+const tagJobRunning = computed(() => jobRunning.value && activeJob.value?.type === 'tag')
 
-onUnmounted(() => {
-  if (pollTimer !== null) window.clearTimeout(pollTimer)
-})
+/** 把任务交给全局 store：切页后它继续轮询，回来看到的是最新进度。 */
+function followJob(job: Job): void {
+  shownJobId.value = job.id
+  void jobs.track(job)
+}
+
+/** 任务结束时刷新一次数据（状态、分块、标签都变了），失败则给出人话提示。 */
+watch(
+  () => activeJob.value?.status,
+  (status) => {
+    if (!status || status === 'pending' || status === 'running') return
+    busy.value = ''
+    if (status === 'failed') {
+      error.value = activeJob.value?.error_msg || '任务失败，可以点「重试」再试一次'
+    }
+    void load()
+  },
+)
 
 const options = reactive({
   strategy: 'recursive' as ChunkStrategy,
@@ -63,29 +88,28 @@ const showThreshold = computed(() => options.strategy === 'semantic')
 /** 智能过滤依赖大模型，未开启原文过滤时也允许单独用（两者取并集） */
 const filtering = computed(() => options.filter_raw || options.filter_ai)
 
-// 过滤预览
-const filterPreview = ref<FilterPreview | null>(null)
-const filterLoading = ref(false)
-const filterError = ref('')
+// 过滤预览：状态在 docs store 里（按文档 id 存），切页回来结果还在
+const filterSlot = docs.filterState(docId)
+const filterPreview = computed(() => filterSlot.data)
+const filterLoading = computed(() => filterSlot.running)
+const filterError = computed(() => filterSlot.error)
+// 勾选状态沿用上次的，避免「结果还在、开关却重置了」的错位
+options.filter_raw = filterSlot.raw
+options.filter_ai = filterSlot.ai
+// 之后每次改动都同步回 store（不重新跑预览也记着）
+watch(
+  () => [options.filter_raw, options.filter_ai],
+  () => {
+    filterSlot.raw = options.filter_raw
+    filterSlot.ai = options.filter_ai
+  },
+)
 
-async function runFilterPreview() {
-  if (!options.filter_raw && !options.filter_ai) {
-    filterError.value = '请先勾选至少一种过滤方式'
-    return
-  }
-  filterLoading.value = true
-  filterError.value = ''
-  try {
-    filterPreview.value = await docsApi.filterPreview(docId, {
-      filter_raw: options.filter_raw,
-      filter_ai: options.filter_ai,
-    })
-  } catch (e) {
-    filterError.value = (e as Error).message
-    filterPreview.value = null
-  } finally {
-    filterLoading.value = false
-  }
+function runFilterPreview() {
+  void docs.runFilterPreview(docId, {
+    filter_raw: options.filter_raw,
+    filter_ai: options.filter_ai,
+  })
 }
 
 /** 当前策略是否配了样例（配了才显示「看样例」按钮）。 */
@@ -247,7 +271,7 @@ async function indexNow() {
     if (result.deduplicated) {
       notice.value = '这篇文档已经在入库队列里了，进度见下方。'
     }
-    watchJob(result.job)
+    followJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
     busy.value = ''
@@ -262,70 +286,37 @@ async function reindex() {
   try {
     const result = await docsApi.reindex(docId)
     if (result.deduplicated) notice.value = '重建任务已在队列中。'
-    watchJob(result.job)
+    followJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
     busy.value = ''
   }
-}
-
-/** 当前是否有后台任务在跑（切页回来也要恢复成「进行中」的样子）。 */
-const jobRunning = computed(() => (activeJob.value ? isActive(activeJob.value) : false))
-const tagJobRunning = computed(() => jobRunning.value && activeJob.value?.type === 'tag')
-
-/** 轮询任务进度，直到结束；结束后刷新页面数据。 */
-async function watchJob(job: Job) {
-  activeJob.value = job
-  if (pollTimer !== null) window.clearTimeout(pollTimer)
-
-  const tick = async () => {
-    try {
-      const latest = await jobsApi.get(job.id)
-      activeJob.value = latest
-      if (isActive(latest)) {
-        pollTimer = window.setTimeout(tick, 700)
-        return
-      }
-      pollTimer = null
-      busy.value = ''
-      if (latest.status === 'failed') {
-        error.value = latest.error_msg || '任务失败，可以点「重试」再试一次'
-      }
-      // 成功不额外弹提示：上面那条绿色进度条已经说明了结果，重复报两遍很吵
-      await load()
-    } catch (e) {
-      pollTimer = null
-      busy.value = ''
-      error.value = (e as Error).message
-    }
-  }
-
-  await tick()
 }
 
 /** 手动重试失败的任务。 */
 async function retryJob() {
-  if (!activeJob.value) return
+  const job = activeJob.value
+  if (!job) return
   busy.value = 'index'
   error.value = ''
   try {
-    const result = await jobsApi.retry(activeJob.value.id)
+    const result = await jobsApi.retry(job.id)
     notice.value = '已重新排入队列。'
-    watchJob(result.job)
+    followJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
     busy.value = ''
   }
 }
 
-/** 手动重打标签，轮询到结束再刷新。 */
+/** 手动重打标签；进度同样由全局任务 store 跟踪。 */
 async function retag() {
   busy.value = 'tag'
   error.value = ''
   notice.value = ''
   try {
     const result = await tagsApi.tag(docId)
-    watchJob(result.job)
+    followJob(result.job)
   } catch (e) {
     error.value = (e as Error).message
     busy.value = ''
@@ -346,25 +337,16 @@ async function reparse() {
 }
 
 /**
- * 回到本页时，把还在跑的后台任务接回来继续显示进度。
+ * 进入本页时把还在跑的任务接上。
  *
- * 任务本身在后端队列里跑，切页不会让它停下；丢的只是前端轮询。
- * 不接回来的话，用户切走再回来会看到一篇停在旧状态的文档，
- * 误以为「这次入库被中断了」。
+ * 全局 store 会继续轮询（切页也没断），这里只需要把页面上要显示的那条任务
+ * 指过去 —— 回来就能看到最新进度，而不是一篇停在旧状态的文档。
  */
-async function resumeJob(): Promise<void> {
-  try {
-    const rows = await jobsApi.list({ target_id: docId, limit: 10 })
-    const running = rows.find(isActive)
-    if (running) await watchJob(running)
-  } catch {
-    // 拉不到任务不影响页面主体
-  }
-}
-
 onMounted(async () => {
   await load()
-  void resumeJob()
+  await jobs.sync(docId)
+  const running = jobs.activeFor(docId)
+  if (running) shownJobId.value = running.id
 })
 </script>
 
@@ -424,7 +406,7 @@ onMounted(async () => {
         >
           重试
         </button>
-        <button v-else-if="!isActive(activeJob)" class="btn btn-sm btn-quiet" @click="activeJob = null">
+        <button v-else-if="!isActive(activeJob)" class="btn btn-sm btn-quiet" @click="shownJobId = null">
           知道了
         </button>
       </div>

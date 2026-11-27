@@ -54,6 +54,13 @@ function safeParse(text: string): unknown {
   }
 }
 
+/** 把任意异常转成一句能直接展示给用户的话。 */
+export function errorMessage(error: unknown): string {
+  if (error instanceof ApiError) return error.message
+  if (error instanceof Error && error.message) return error.message
+  return '请求失败，请稍后重试'
+}
+
 export const http = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: Body) => request<T>('POST', path, body),
