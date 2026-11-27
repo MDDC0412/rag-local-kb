@@ -55,8 +55,8 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        PNPM_VERSION: ${PNPM_VERSION:-11.18.0}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        # 仅当目标机器能访问该源时才需要设置；为空表示使用默认 registry
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
