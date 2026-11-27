@@ -120,10 +120,10 @@ frontend/
   src/stores/       状态管理
   src/router/       路由定义
   src/styles/       主题变量
-  Dockerfile        前端镜像定义（仅打包构建产物）
+  Dockerfile        前端镜像定义（多阶段构建）
   nginx.conf        静态资源服务与反向代理配置
 samples/            示例文档
-scripts/            开发启动、重置、迁移与发布打包脚本
+scripts/            开发启动、重置与迁移脚本
 docker-compose.yml  容器编排定义
 ```
 
@@ -197,66 +197,53 @@ pnpm dev
 
 ## 部署
 
-### 构建方式说明
-
-前端依赖安装与构建需要访问 npm 源。若部署目标机器无公网 DNS（npm 源不可达），
-前端镜像构建无法在服务器上完成。因此本项目采用「开发机构建、服务器仅运行」的方式：
-
-- 前端镜像只打包 `frontend/dist`，构建期不安装任何依赖；
-- 后端镜像在服务器构建，仅需可访问 PyPI 源（或本地 wheel 缓存）。
-
-### 第一步：开发机生成发布包
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package_release.ps1
-```
-
-产出位于 `release/`：
-
-| 文件 | 内容 |
-|---|---|
-| `rag-backend-src.tar.gz` | 后端源码、各 Dockerfile、`docker-compose.yml`、脚本、示例文档 |
-| `rag-frontend-dist.tar.gz` | 前端构建产物 `dist`、前端 Dockerfile、nginx 配置 |
-| `SHA256SUMS.txt` | 两个压缩包的校验和 |
-
-脚本会先执行 `pnpm build`，随后打包并计算校验和。构建失败时脚本立即退出，不产出压缩包。
-
-### 第二步：上传至服务器
+### 标准方式：一条命令
 
 ```bash
-# 服务器上创建部署目录并上传两个压缩包
-mkdir -p /opt/rag && cd /opt/rag
-# 上传 rag-backend-src.tar.gz 与 rag-frontend-dist.tar.gz 至该目录
-
-sha256sum -c SHA256SUMS.txt      # 校验完整性
-tar -xzf rag-backend-src.tar.gz  # 解出后端源码与部署文件
-tar -xzf rag-frontend-dist.tar.gz --overwrite  # 解出前端 dist 至 frontend/
 docker compose up -d --build
 ```
 
-### 第三步：服务器环境变量
+依赖安装在构建镜像时完成：前端在 `node:22-alpine` 阶段执行 `npm install` 与 `vite build`，
+后端在 `python:3.11-slim` 阶段执行 `pip install`，产物拷入运行镜像。宿主机不需要安装
+Node、Python 或任何包管理器，只需 Docker 与 Docker Compose。
 
-在部署目录下的 `.env` 中按需设置：
+访问：`http://服务器IP:8080`。数据目录为宿主机上的 `./data`，
+包含数据库、向量库、上传文件与日志。
+
+### 服务器无法访问 npm 源时：镜像分发
+
+内网或离线服务器若不能访问 npm registry，构建会在依赖安装阶段失败。
+此时改为在任意可上网的机器上构建镜像，再把镜像分发到服务器：
+
+```bash
+# 1. 可上网的机器：构建并导出镜像
+docker compose build
+docker save rag-backend:latest rag-frontend:latest | gzip > rag-images.tar.gz
+
+# 2. 上传 rag-images.tar.gz 与仓库源码到服务器后
+docker load < rag-images.tar.gz
+docker compose up -d --no-build
+```
+
+服务器只加载镜像并启动容器，不参与构建，也不需要 Node 与 npm 源。前端依赖更新后重新执行第 1 步。
+
+### 可选环境变量
+
+在仓库根目录的 `.env` 中按需设置（`docker compose` 自动读取）：
 
 ```ini
-# 对外访问地址，用于跨域白名单
+# 跨域白名单，设置为实际访问地址
 APP_PUBLIC_ORIGIN=http://服务器IP:8080
 
-# 后端依赖的 PyPI 镜像源（服务器可访问该源时应设置）
-PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 构建期代理，仅在服务器出网需要代理时设置
+# 构建期依赖源与代理
+NPM_REGISTRY=https://registry.npmjs.org
+PIP_INDEX_URL=https://pypi.org/simple
 HTTP_PROXY=
 HTTPS_PROXY=
 NO_PROXY=
 ```
 
-`APP_*` 变量写入容器运行时环境；`PIP_INDEX_URL` 与代理变量仅作用于构建阶段。
-
-### 访问
-
-- 应用入口：http://服务器IP:8080
-- 数据目录：宿主机部署目录下的 `data/`，包含数据库、向量库、上传文件与日志。
+`APP_*` 变量写入容器运行时环境，其余变量仅在构建阶段生效。
 
 ### 单进程约束
 
