@@ -207,6 +207,11 @@ onMounted(load)
           </div>
         </div>
       </section>
+      <p class="page-foot">
+        GitHub：<a href="https://github.com/MDDC0412/rag-local-kb" target="_blank" rel="noreferrer">
+          mddc0412
+        </a>
+      </p>
     </template>
   </div>
 </template>
@@ -225,6 +230,16 @@ onMounted(load)
   color: var(--text-1);
   font-size: 13.5px;
   line-height: 1.7;
+}
+
+/* 页脚：仓库地址，弱化显示，不抢正文注意力 */
+.page-foot {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.page-foot a {
+  color: var(--accent);
 }
 
 .notice {
