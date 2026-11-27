@@ -1,35 +1,21 @@
-# 一条命令起整套：nginx（对外 8080） + uvicorn（容器内 8000）
+# 生产部署配置：只引用镜像，不包含构建段。
 #
-# 标准用法（部署机可访问 npm 源与 PyPI 源）：
-#     docker compose up -d --build
-#   依赖安装在构建镜像时完成，宿主机不需要 Node、Python 或任何包管理器。
+# 镜像由 GitHub Actions 构建并推送至 GHCR（.github/workflows/docker.yml），
+# 部署机只负责拉取与运行，不参与构建，宿主机无需 Node、Python 或包管理器。
 #
-# 部署机不可访问 npm 源时的用法（镜像分发）：
-#   1. 在可上网的机器上构建并导出镜像
-#        docker compose build
-#        docker save rag-backend:latest rag-frontend:latest | gzip > rag-images.tar.gz
-#   2. 上传到部署机并加载
-#        docker load < rag-images.tar.gz
-#        docker compose up -d --no-build
-#   部署机不参与构建，也不需要 Node 与 npm 源。
+# 部署：
+#     docker compose pull
+#     docker compose up -d
 #
 # 可选变量（写在同目录 .env 中）：
-#   APP_PUBLIC_ORIGIN=http://your-server-ip:8080   跨域白名单
-#   NPM_REGISTRY / PIP_INDEX_URL                  构建期依赖源
-#   HTTP_PROXY / HTTPS_PROXY / NO_PROXY           构建期代理
-# APP_* 变量写入容器运行时环境，其余只在构建期生效。
+#     APP_PUBLIC_ORIGIN=http://服务器IP:8080   跨域白名单
+#
+# 本地开发构建请使用叠加文件：
+#     docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 services:
   backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-      args:
-        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
-    image: rag-backend:latest
+    image: ghcr.io/mddc0412/rag-local-kb/backend:latest
     container_name: rag-backend
     restart: unless-stopped
     # 必须单进程：Chroma 嵌入式库多进程会丢写入（见 docs/HANDOVER.md §7.1）
@@ -40,7 +26,7 @@ services:
       APP_DATA_DIR: /data
       APP_HOST: 0.0.0.0
       APP_PORT: "8000"
-      # 容器里没有系统代理，显式直连，免得上游代理把请求吞掉
+      # 容器内无代理，显式直连，避免上游代理吞掉请求
       APP_HTTP_PROXY: direct
       APP_CORS_ORIGINS: ${APP_PUBLIC_ORIGIN:-http://127.0.0.1:8080},http://localhost:8080
     volumes:
@@ -54,15 +40,7 @@ services:
       start_period: 40s
 
   frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      args:
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
-    image: rag-frontend:latest
+    image: ghcr.io/mddc0412/rag-local-kb/frontend:latest
     container_name: rag-frontend
     restart: unless-stopped
     ports:

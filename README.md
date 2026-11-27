@@ -124,7 +124,9 @@ frontend/
   nginx.conf        静态资源服务与反向代理配置
 samples/            示例文档
 scripts/            开发启动、重置与迁移脚本
-docker-compose.yml  容器编排定义
+docker-compose.yml        生产部署配置（只引用镜像）
+docker-compose.build.yml  本地构建叠加配置
+.github/workflows/        CI：构建并推送镜像至 GHCR
 ```
 
 ## 快速开始
@@ -197,53 +199,64 @@ pnpm dev
 
 ## 部署
 
-### 标准方式：一条命令
+### 部署模型
+
+镜像由 GitHub Actions 构建并推送至 GHCR（`.github/workflows/docker.yml`），
+推送 `main` 分支或 `v*` 标签时自动触发。部署机只负责拉取镜像并运行容器，
+不参与构建，宿主机无需安装 Node、Python 或任何包管理器。
+
+镜像地址：
+
+| 服务 | 镜像 |
+|---|---|
+| 后端 | `ghcr.io/mddc0412/rag-local-kb/backend:latest` |
+| 前端 | `ghcr.io/mddc0412/rag-local-kb/frontend:latest` |
+
+镜像同时带有 `main`、`sha-<提交>` 与语义版本标签，生产环境建议固定版本、
+不使用 `latest`。
+
+### 首次部署
+
+前置条件：Docker 与 Docker Compose 已安装，部署机可访问 `ghcr.io`。
 
 ```bash
-docker compose up -d --build
+mkdir -p /opt/rag && cd /opt/rag
+# 将仓库中的 docker-compose.yml、.env.example 复制到该目录
+cp .env.example .env      # 按需填写 APP_PUBLIC_ORIGIN、模型供应商配置
+
+docker compose pull
+docker compose up -d
 ```
 
-依赖安装在构建镜像时完成：前端在 `node:22-alpine` 阶段执行 `npm install` 与 `vite build`，
-后端在 `python:3.11-slim` 阶段执行 `pip install`，产物拷入运行镜像。宿主机不需要安装
-Node、Python 或任何包管理器，只需 Docker 与 Docker Compose。
-
-访问：`http://服务器IP:8080`。数据目录为宿主机上的 `./data`，
+访问 `http://服务器IP:8080`。数据目录为部署目录下的 `./data`，
 包含数据库、向量库、上传文件与日志。
 
-### 服务器无法访问 npm 源时：镜像分发
-
-内网或离线服务器若不能访问 npm registry，构建会在依赖安装阶段失败。
-此时改为在任意可上网的机器上构建镜像，再把镜像分发到服务器：
+### 更新版本
 
 ```bash
-# 1. 可上网的机器：构建并导出镜像
-docker compose build
-docker save rag-backend:latest rag-frontend:latest | gzip > rag-images.tar.gz
-
-# 2. 上传 rag-images.tar.gz 与仓库源码到服务器后
-docker load < rag-images.tar.gz
-docker compose up -d --no-build
+docker compose pull
+docker compose up -d
 ```
 
-服务器只加载镜像并启动容器，不参与构建，也不需要 Node 与 npm 源。前端依赖更新后重新执行第 1 步。
+### 环境变量
 
-### 可选环境变量
+在部署目录的 `.env` 中按需设置（`docker compose` 自动读取）：
 
-在仓库根目录的 `.env` 中按需设置（`docker compose` 自动读取）：
+| 变量 | 说明 |
+|---|---|
+| `APP_PUBLIC_ORIGIN` | 实际访问地址，用于跨域白名单 |
+| `DEV_LLM_*` / `DEV_EMBED_*` / `DEV_RERANK_*` | 首次启动写入数据库的模型供应商配置 |
 
-```ini
-# 跨域白名单，设置为实际访问地址
-APP_PUBLIC_ORIGIN=http://服务器IP:8080
+### 本地构建
 
-# 构建期依赖源与代理
-NPM_REGISTRY=https://registry.npmjs.org
-PIP_INDEX_URL=https://pypi.org/simple
-HTTP_PROXY=
-HTTPS_PROXY=
-NO_PROXY=
+生产配置只引用镜像、不含构建段。需要本机构建（修改代码后重打镜像、或调试构建）时，
+叠加构建文件：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-`APP_*` 变量写入容器运行时环境，其余变量仅在构建阶段生效。
+构建参数 `NPM_REGISTRY`、`PIP_INDEX_URL` 与代理变量通过 `.env` 传入。
 
 ### 单进程约束
 
