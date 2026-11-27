@@ -1,21 +1,19 @@
 # 一条命令起整套：nginx（对外 8080） + uvicorn（容器内 8000）
 #
-# 用法：
-#   docker compose up --build
-#   → http://<服务器IP>:8080
+# 部署流程分两步（前端不再在服务器上构建）：
+#   1. 开发机：执行 scripts/package_release.ps1，产出 release/ 下两个压缩包
+#   2. 服务器：解压后执行 docker compose up -d
 #
-# 数据落在 ./data（宿主机），容器删了数据还在。
+# 若要在服务器上直接构建，需先准备两样东西：
+#   - frontend/dist：由开发机的 pnpm build 生成（打包脚本已包含）
+#   - 可访问 PyPI 的镜像源，或本地 wheel 缓存（后端 Dockerfile 用 PIP_INDEX_URL）
 #
-# 部署在服务器上时，请在仓库根目录建 .env 指定对外地址与镜像源：
+# 服务器根目录 .env（与 docker-compose.yml 同级，可选）：
 #   APP_PUBLIC_ORIGIN=http://your-server-ip:8080
-#   NPM_REGISTRY=https://registry.npmmirror.com        # registry 不可达时改镜像
 #   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-#   HTTP_PROXY=
-#   HTTPS_PROXY=
-#   NO_PROXY=
+#   HTTP_PROXY= / HTTPS_PROXY= / NO_PROXY=     # 仅构建期生效
 #
-# 注意：APP_* 开头的变量只写进容器的环境变量；HTTP(S)_PROXY / NPM_REGISTRY /
-# PIP_INDEX_URL 只在构建期生效（compose 的 build.args），不会带进运行时。
+# APP_* 变量写入容器运行时环境；PIP_INDEX_URL 与代理变量只在构建期作为 build.args 使用。
 
 services:
   backend:
@@ -27,9 +25,10 @@ services:
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
+    image: rag-backend:latest
     container_name: rag-backend
     restart: unless-stopped
-    # 必须单进程：Chroma 嵌入式库多进程会丢写入（见 HANDOVER §7.1）
+    # 必须单进程：Chroma 嵌入式库多进程会丢写入（见 docs/HANDOVER.md §7.1）
     command:
       ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
@@ -51,15 +50,11 @@ services:
       start_period: 40s
 
   frontend:
+    # 只打包已构建好的 dist，构建期不安装任何依赖
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        # 仅当目标机器能访问该源时才需要设置；为空表示使用默认 registry
-        NPM_REGISTRY: ${NPM_REGISTRY:-}
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-}
+    image: rag-frontend:latest
     container_name: rag-frontend
     restart: unless-stopped
     ports:

@@ -1,40 +1,20 @@
-# 前端镜像：构建静态文件 → 用 nginx 提供，并把 /api 反代到后端
+# 前端镜像：仅打包构建产物，构建期不安装任何 npm 依赖。
 #
-# 构建期只需要 Docker Hub（基础镜像），不再访问 npm registry：
-# node:22-alpine 已内置 npm 与 npx，直接用它安装依赖并执行 vite 构建。
-# 这样在没有外网 DNS 的服务器上也能构建成功。
+# 为什么这样设计：
+#   部署目标服务器可能没有公网 DNS（npm registry 不可达），任何在构建期
+#   下载 npm 包的做法都会失败。因此依赖安装与前端构建在开发机完成，
+#   产物随发布包分发（scripts/package_release.ps1），本镜像只负责拷入 nginx。
+#
+# 前置条件：仓库根目录下存在 frontend/dist（由 pnpm build 生成）。
+#   若不存在，构建会在下面 COPY 这一步失败，并提示先执行打包脚本。
 
-FROM node:22-alpine AS build
-
-WORKDIR /app
-
-# 允许构建期覆盖 npm 镜像源（仅当目标机器能访问该源时才有意义）
-ARG NPM_REGISTRY=
-
-# 先只拷依赖清单：改代码不会让这一层失效
-COPY frontend/package.json frontend/pnpm-lock.yaml* ./
-
-# 有 lockfile 时按锁文件内容安装（不需要 pnpm 本体），否则退回普通安装
-RUN if [ -f pnpm-lock.yaml ]; then \
-        if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi; \
-        npm exec --yes --package=pnpm@11 -- pnpm install --frozen-lockfile --prefer-offline \
-          || npm install --no-audit --no-fund; \
-    else \
-        if [ -n "${NPM_REGISTRY}" ]; then npm config set registry "${NPM_REGISTRY}"; fi; \
-        npm install --no-audit --no-fund; \
-    fi
-
-COPY frontend/ ./
-
-# 构建时不需要后端地址：nginx 会反代 /api
-RUN npx --no-install vite build
-
-# ---- 运行阶段 ----
 FROM nginx:1.27-alpine
 
 ENV TZ=Asia/Shanghai
 
-COPY --from=build /app/dist /usr/share/nginx/html
+# 静态资源；目录不存在时构建失败，避免打出一个空白页面
+COPY frontend/dist /usr/share/nginx/html
+
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80

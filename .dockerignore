@@ -23,7 +23,6 @@ AGENTS.md
 
 # 依赖与构建产物
 **/node_modules/
-**/dist/
 **/.vite/
 **/*.tsbuildinfo
 **/__pycache__/
@@ -34,6 +33,8 @@ AGENTS.md
 pytest-cache-files-*/
 .coverage
 htmlcov/
+
+# 注意：不能忽略 frontend/dist —— 前端镜像直接打包它（构建期不安装依赖）
 
 # 编辑器与系统文件
 .idea/

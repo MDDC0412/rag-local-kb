@@ -28,6 +28,9 @@ dist/
 .vite/
 *.tsbuildinfo
 
+# ---- 发布打包产物 ----
+release/
+
 # ---- os / editor ----
 .DS_Store
 Thumbs.db
