@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { useChatStore } from '@/stores/chat'
 import { useUiStore } from '@/stores/ui'
 
 const ui = useUiStore()
 const route = useRoute()
+// 对话状态在 store 里，切页也活着：侧栏据此提示"后台还在生成"
+const chat = useChatStore()
 
 const nav = [
   { to: '/', title: '总览' },
@@ -42,6 +45,7 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
           :class="{ active: route.path === item.to }"
         >
           <span class="nav-label">{{ item.title }}</span>
+          <span v-if="item.to === '/chat' && chat.streaming" class="nav-flag">生成中</span>
         </RouterLink>
       </nav>
 
@@ -139,6 +143,13 @@ const currentTitle = computed(() => (route.meta.title as string) ?? '')
 }
 .nav-item.active .nav-label {
   position: relative;
+}
+/* 后台生成中的提示：提示语很小，不抢焦点 */
+.nav-flag {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--accent);
+  font-family: var(--font-mono);
 }
 .nav-item.active::before {
   content: "";

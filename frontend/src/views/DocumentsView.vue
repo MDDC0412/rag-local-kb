@@ -130,11 +130,37 @@ function openDetail(doc: DocumentItem) {
 /** 手动触发打标签，轮询到结束再刷新列表。 */
 async function tagDoc(doc: DocumentItem, event: Event) {
   event.stopPropagation()
-  tagging.value = doc.id
   notice.value = null
+  tagging.value = doc.id
   try {
     const result = await tagsApi.tag(doc.id)
     await pollTag(result.job)
+  } catch (e) {
+    notice.value = { tone: 'bad', text: (e as Error).message }
+    tagging.value = null
+  }
+}
+
+/**
+ * 跟踪打标签任务直到结束。
+ *
+ * 轮询只影响界面：切到别的页面时任务还在后端跑，
+ * 回来时 resumeTagging() 会把它接回来，按钮才继续显示「生成中」。
+ */
+async function pollTag(job: Job): Promise<void> {
+  tagging.value = job.target_id
+  let latest = job
+  try {
+    for (let attempt = 0; attempt < 60 && isActive(latest); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      latest = await jobsApi.get(job.id)
+    }
+    await store.load()
+    if (latest.status === 'failed') {
+      notice.value = { tone: 'bad', text: latest.error_msg || '打标签失败，可以再试一次' }
+      return
+    }
+    notice.value = { tone: 'ok', text: '已生成摘要、分类和标签' }
   } catch (e) {
     notice.value = { tone: 'bad', text: (e as Error).message }
   } finally {
@@ -142,18 +168,18 @@ async function tagDoc(doc: DocumentItem, event: Event) {
   }
 }
 
-async function pollTag(job: Job): Promise<void> {
-  let latest = job
-  for (let attempt = 0; attempt < 60 && isActive(latest); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    latest = await jobsApi.get(job.id)
+/** 回到本页时，把还在跑的打标签任务接回来（否则「生成中」会随页面一起消失）。 */
+async function resumeTagging(): Promise<void> {
+  try {
+    const rows = await jobsApi.list({ limit: 20 })
+    const running = rows.find(
+      (job) =>
+        job.type === 'tag' && isActive(job) && store.items.some((doc) => doc.id === job.target_id),
+    )
+    if (running) await pollTag(running)
+  } catch {
+    // 拉不到任务不影响列表本身
   }
-  await store.load()
-  if (latest.status === 'failed') {
-    notice.value = { tone: 'bad', text: latest.error_msg || '打标签失败，可以再试一次' }
-    return
-  }
-  notice.value = { tone: 'ok', text: '已生成摘要、分类和标签' }
 }
 
 function formatDate(value: string): string {
@@ -164,7 +190,10 @@ function formatDate(value: string): string {
   ).padStart(2, '0')}`
 }
 
-onMounted(() => store.load())
+onMounted(async () => {
+  await store.load()
+  void resumeTagging()
+})
 </script>
 
 <template>

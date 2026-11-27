@@ -269,6 +269,10 @@ async function reindex() {
   }
 }
 
+/** 当前是否有后台任务在跑（切页回来也要恢复成「进行中」的样子）。 */
+const jobRunning = computed(() => (activeJob.value ? isActive(activeJob.value) : false))
+const tagJobRunning = computed(() => jobRunning.value && activeJob.value?.type === 'tag')
+
 /** 轮询任务进度，直到结束；结束后刷新页面数据。 */
 async function watchJob(job: Job) {
   activeJob.value = job
@@ -341,7 +345,27 @@ async function reparse() {
   }
 }
 
-onMounted(load)
+/**
+ * 回到本页时，把还在跑的后台任务接回来继续显示进度。
+ *
+ * 任务本身在后端队列里跑，切页不会让它停下；丢的只是前端轮询。
+ * 不接回来的话，用户切走再回来会看到一篇停在旧状态的文档，
+ * 误以为「这次入库被中断了」。
+ */
+async function resumeJob(): Promise<void> {
+  try {
+    const rows = await jobsApi.list({ target_id: docId, limit: 10 })
+    const running = rows.find(isActive)
+    if (running) await watchJob(running)
+  } catch {
+    // 拉不到任务不影响页面主体
+  }
+}
+
+onMounted(async () => {
+  await load()
+  void resumeJob()
+})
 </script>
 
 <template>
@@ -360,14 +384,16 @@ onMounted(load)
         </div>
       </div>
       <div class="head-actions">
-        <button class="btn btn-sm btn-quiet" :disabled="!!busy" @click="reparse">重新解析</button>
-        <button v-if="isIndexed" class="btn btn-sm" :disabled="!!busy" @click="reindex">
+        <button class="btn btn-sm btn-quiet" :disabled="!!busy || jobRunning" @click="reparse">
+          重新解析
+        </button>
+        <button v-if="isIndexed" class="btn btn-sm" :disabled="!!busy || jobRunning" @click="reindex">
           重建索引
         </button>
         <button
           v-else
           class="btn btn-sm btn-primary"
-          :disabled="!!busy || !hasPendingChunks"
+          :disabled="!!busy || jobRunning || !hasPendingChunks"
           @click="indexNow"
         >
           {{ busy === 'index' ? '入库中…' : '确认入库' }}
@@ -393,7 +419,7 @@ onMounted(load)
         <button
           v-if="activeJob.status === 'failed'"
           class="btn btn-sm btn-quiet"
-          :disabled="!!busy"
+          :disabled="!!busy || jobRunning"
           @click="retryJob"
         >
           重试
@@ -418,8 +444,8 @@ onMounted(load)
     <section v-if="doc && (doc.summary || doc.tags.length || doc.category)" class="tagbox card">
       <div class="tagbox-head">
         <span class="tagbox-label">文档摘要</span>
-        <button class="btn btn-sm btn-quiet" :disabled="!!busy" @click="retag">
-          {{ busy === 'tag' ? '生成中…' : '重打标签' }}
+        <button class="btn btn-sm btn-quiet" :disabled="!!busy || jobRunning" @click="retag">
+          {{ busy === 'tag' || tagJobRunning ? '生成中…' : '重打标签' }}
         </button>
       </div>
       <p v-if="doc.summary" class="tagbox-summary">{{ doc.summary }}</p>

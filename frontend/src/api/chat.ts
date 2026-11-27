@@ -190,7 +190,9 @@ export async function streamChat(
       body: JSON.stringify(payload),
       signal,
     })
-  } catch {
+  } catch (e) {
+    // 主动中止（停止按钮、调用方取消）不算网络故障，交给调用方识别
+    if (e instanceof Error && e.name === 'AbortError') throw e
     handlers.onError?.('无法连接后端，请确认服务已启动')
     return
   }

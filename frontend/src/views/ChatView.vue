@@ -1,39 +1,51 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import {
   chatApi,
-  defaultOptions,
-  streamChat,
-  type ChatOptions,
   type Citation,
   type Conversation,
   type MessageItem,
-  type ModelOptions,
   type RetrievalDebugData,
-  type TraceStep,
 } from '@/api/chat'
 import { renderMarkdown } from '@/api/markdown'
+import { useChatStore } from '@/stores/chat'
 import TracePanel from '@/components/TracePanel.vue'
 
-const conversations = ref<Conversation[]>([])
-const activeId = ref<number | null>(null)
-const messages = ref<MessageItem[]>([])
-const loading = ref(false)
-const error = ref('')
+/**
+ * 对话页只负责「显示 + 交互」，会话与流式状态都在 useChatStore 里。
+ * 这样切到别的页面只是卸载视图，不会打断正在生成的回答。
+ */
+const chat = useChatStore()
+const {
+  conversations,
+  activeId,
+  messages,
+  error,
+  draft,
+  streaming,
+  streamText,
+  liveChunks,
+  liveInfo,
+  traceSteps,
+  liveModels,
+  options,
+  modelOptions,
+  modelsLoading,
+  optimizing,
+  suggestion,
+  preOptimizeDraft,
+  activeConversation,
+  liveVisible,
+} = storeToRefs(chat)
 
-const draft = ref('')
-const streaming = ref(false)
-const streamText = ref('')
-const liveChunks = ref<Citation[]>([])
-const liveInfo = reactive({ expanded: false, rewritten: '', lowScore: false })
+// 纯界面状态：抽屉、弹层、面板尺寸，切页丢掉无所谓
+const showOptions = ref(false)
+const showModels = ref(false)
+const openCitation = ref<Citation | null>(null)
+const debugData = ref<RetrievalDebugData | null>(null)
 
-// 轨迹
-const traceSteps = ref<TraceStep[]>([])
-const liveModels = ref<{
-  llm?: { name: string; model: string } | null
-  embedding?: { name: string; model: string } | null
-  rerank?: { name: string; model: string } | null
-} | null>(null)
+const isEmpty = computed(() => !messages.value.length && !streamText.value)
 
 // 轨迹面板：可收起、可拖宽（上限为对话区一半）
 const TRACE_MIN = 200
@@ -42,32 +54,7 @@ const traceWidth = ref(TRACE_DEFAULT)
 const traceCollapsed = ref(false)
 const dragging = ref(false)
 
-const abortController = ref<AbortController | null>(null)
-
-const options = reactive<ChatOptions>({ ...defaultOptions })
-const showOptions = ref(false)
-
-// 模型选择
-const modelOptions = ref<ModelOptions | null>(null)
-const showModels = ref(false)
-const modelsLoading = ref(false)
-
-// 引用弹层
-const openCitation = ref<Citation | null>(null)
-// 检索详情
-const debugData = ref<RetrievalDebugData | null>(null)
-// 提示词优化
-const optimizing = ref(false)
-const suggestion = ref<{ optimized: string; rationale: string } | null>(null)
-/** 优化前的原文，用于「撤销」。 */
-const preOptimizeDraft = ref('')
-
 const listEl = ref<HTMLElement | null>(null)
-
-const isEmpty = computed(() => !messages.value.length && !streamText.value)
-const activeConversation = computed(
-  () => conversations.value.find((conv) => conv.id === activeId.value) ?? null,
-)
 
 /** 整个聊天容器的引用：拖拽与上限都以它为基准（需先声明再被引用）。 */
 const chatRootEl = ref<HTMLElement | null>(null)
@@ -110,66 +97,22 @@ function stopDrag() {
   window.removeEventListener('mouseup', stopDrag)
 }
 
-onBeforeUnmount(() => {
-  stopDrag()
-  abortController.value?.abort()
-})
-
-async function loadConversations() {
-  conversations.value = await chatApi.list()
-  if (!activeId.value && conversations.value.length) {
-    await selectConversation(conversations.value[0].id)
-  }
-}
+// 只清理拖拽监听。**不要 abort 流式请求**：离开页面不等于用户想终止回答。
+onBeforeUnmount(stopDrag)
 
 async function openModels() {
   showModels.value = true
-  if (modelOptions.value) return
-  modelsLoading.value = true
-  try {
-    modelOptions.value = await chatApi.modelOptions()
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    modelsLoading.value = false
-  }
+  await chat.loadModelOptions()
 }
 
-/** 从历史消息里还原某条回答的轨迹（retrieval_json 里存了 steps）。 */
-function traceOf(msg: MessageItem): TraceStep[] {
-  try {
-    const data = JSON.parse(msg.retrieval_json || '{}')
-    return Array.isArray(data.steps) ? (data.steps as TraceStep[]) : []
-  } catch {
-    return []
-  }
-}
-
-async function selectMessageTrace(msg: MessageItem) {
-  const steps = traceOf(msg)
-  if (steps.length) {
-    traceSteps.value = steps
-    liveInfo.expanded = Boolean(JSON.parse(msg.retrieval_json || '{}').expanded)
-    liveInfo.rewritten = msg.rewritten_query
-  }
-}
-
-/** 保存会话的模型选择。 */
+/** 保存会话的模型选择，成功后关掉抽屉。 */
 async function saveModels(payload: {
   llm_provider_id: number | null
   embedding_provider_id: number | null
   rerank_provider_id: number | null
   use_rerank: boolean
 }) {
-  if (!activeId.value) return
-  try {
-    const updated = await chatApi.updateModels(activeId.value, payload)
-    const index = conversations.value.findIndex((conv) => conv.id === updated.id)
-    if (index >= 0) conversations.value[index] = updated
-    showModels.value = false
-  } catch (e) {
-    error.value = (e as Error).message
-  }
+  if (await chat.saveModels(payload)) showModels.value = false
 }
 
 function modelName(kind: 'llm' | 'embedding' | 'rerank', id: number | null | undefined): string {
@@ -178,175 +121,9 @@ function modelName(kind: 'llm' | 'embedding' | 'rerank', id: number | null | und
   return found ? found.model : '跟随默认'
 }
 
-async function selectConversation(id: number) {
-  activeId.value = id
-  loading.value = true
-  error.value = ''
-  try {
-    const detail = await chatApi.detail(id)
-    messages.value = detail.messages
-    await scrollToBottom()
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    loading.value = false
-  }
-}
-
-async function newConversation() {
-  const conv = await chatApi.create(1, '')
-  conversations.value.unshift(conv)
-  activeId.value = conv.id
-  messages.value = []
-  draft.value = ''
-  streamText.value = ''
-}
-
 async function removeConversation(conv: Conversation) {
   if (!confirm(`删除会话「${conv.title}」？`)) return
-  await chatApi.remove(conv.id)
-  conversations.value = conversations.value.filter((c) => c.id !== conv.id)
-  if (activeId.value === conv.id) {
-    activeId.value = null
-    messages.value = []
-    if (conversations.value.length) await selectConversation(conversations.value[0].id)
-  }
-}
-
-async function send() {
-  const question = draft.value.trim()
-  if (!question || streaming.value || !activeId.value) return
-
-  draft.value = ''
-  suggestion.value = null
-  streaming.value = true
-  streamText.value = ''
-  liveChunks.value = []
-  liveInfo.expanded = false
-  liveInfo.rewritten = ''
-  liveInfo.lowScore = false
-  traceSteps.value = []
-  liveModels.value = null
-  error.value = ''
-
-  // 先把用户消息显示出来（后端也会落库，返回后重新拉取）
-  messages.value.push({
-    id: -Date.now(),
-    conversation_id: activeId.value,
-    role: 'user',
-    content: question,
-    rewritten_query: '',
-    citations_json: '[]',
-    retrieval_json: '{}',
-    token_usage: 0,
-    latency_ms: 0,
-    created_at: new Date().toISOString(),
-  })
-  await scrollToBottom()
-
-  abortController.value = new AbortController()
-
-  await streamChat(
-    { conversation_id: activeId.value, question, options: { ...options } },
-    {
-      onStarted(data) {
-        liveModels.value = data.models
-        if (data.note) error.value = ''
-      },
-      onStep(step) {
-        traceSteps.value = [...traceSteps.value, step]
-      },
-      onRetrieval(data) {
-        liveChunks.value = data.chunks.map((chunk) => ({
-          n: chunk.n,
-          chunk_id: chunk.chunk_id,
-          document_id: 0,
-          doc_name: chunk.doc_name,
-          page_no: chunk.page_no,
-          snippet: chunk.snippet,
-          score: chunk.score,
-        }))
-        liveInfo.expanded = data.expanded
-        liveInfo.rewritten = data.rewritten
-        liveInfo.lowScore = data.low_score
-      },
-      onDelta(text) {
-        streamText.value += text
-        scrollToBottom()
-      },
-      onDone(data) {
-        streaming.value = false
-        if (data.steps?.length) traceSteps.value = data.steps
-      },
-      onError(message) {
-        error.value = message
-        streaming.value = false
-      },
-    },
-    abortController.value.signal,
-  )
-
-  streaming.value = false
-  streamText.value = ''
-
-  // 重新拉取，拿到带 id 的正式消息（含引用与检索详情）
-  if (activeId.value) await selectConversation(activeId.value)
-  await loadConversations()
-}
-
-function stop() {
-  abortController.value?.abort()
-  streaming.value = false
-}
-
-async function optimize() {
-  if (!draft.value.trim() || optimizing.value) return
-  optimizing.value = true
-  // 记住采纳前的原文，撤销时才能还原
-  preOptimizeDraft.value = draft.value
-  suggestion.value = null
-  try {
-    suggestion.value = await chatApi.optimize(
-      draft.value,
-      messages.value
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .slice(-6)
-        .map((m) => ({ role: m.role, content: m.content })),
-    )
-  } catch (e) {
-    error.value = (e as Error).message
-  } finally {
-    optimizing.value = false
-  }
-}
-
-function adoptSuggestion() {
-  if (suggestion.value) {
-    draft.value = suggestion.value.optimized
-    suggestion.value = null
-  }
-}
-
-/** 忽略：关掉建议卡片，输入框保持原样。 */
-function dismissSuggestion() {
-  suggestion.value = null
-  preOptimizeDraft.value = ''
-}
-
-/** 撤销：把输入框还原成优化前的内容。 */
-function undoAdopt() {
-  if (preOptimizeDraft.value) {
-    draft.value = preOptimizeDraft.value
-    preOptimizeDraft.value = ''
-  }
-}
-
-/** 再改：以当前建议为草稿再优化一次。 */
-async function refineSuggestion() {
-  if (!suggestion.value) return
-  draft.value = suggestion.value.optimized
-  suggestion.value = null
-  await optimize()
+  await chat.removeConversation(conv)
 }
 
 function citationsOf(msg: MessageItem): Citation[] {
@@ -362,7 +139,7 @@ async function showDebug(msg: MessageItem) {
     const result = await chatApi.retrieval(msg.id)
     debugData.value = result.retrieval
     // 同时把这条回答的轨迹回填到右侧面板，方便对照"当次检索"与"步骤"
-    await selectMessageTrace(msg)
+    chat.showMessageTrace(msg)
   } catch (e) {
     error.value = (e as Error).message
   }
@@ -405,9 +182,18 @@ function timeOf(value: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+// 新消息或新 token 到达后跟着滚到底。
+// 只在用户自己看着这场对话时才滚：在别的会话里读历史不该被后台生成打断。
+watch([messages, () => messages.value.length, activeId], () => {
+  void scrollToBottom()
+})
+watch(streamText, () => {
+  if (liveVisible.value) void scrollToBottom()
+})
+
 onMounted(async () => {
-  await loadConversations()
-  if (!conversations.value.length) await newConversation()
+  await chat.bootstrap()
+  await scrollToBottom()
 })
 </script>
 
@@ -415,14 +201,14 @@ onMounted(async () => {
   <div ref="chatRootEl" class="chat">
     <!-- 会话列表 -->
     <aside class="side">
-      <button class="btn btn-sm new-btn" @click="newConversation">新会话</button>
+      <button class="btn btn-sm new-btn" @click="chat.newConversation()">新会话</button>
       <div class="conv-list">
         <div
           v-for="conv in conversations"
           :key="conv.id"
           class="conv"
           :class="{ active: conv.id === activeId }"
-          @click="selectConversation(conv.id)"
+          @click="chat.selectConversation(conv.id)"
         >
           <span class="conv-title">{{ conv.title }}</span>
           <button class="conv-del" title="删除" @click.stop="removeConversation(conv)">×</button>
@@ -483,8 +269,8 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 流式中 -->
-        <div v-if="streaming" class="msg assistant">
+        <!-- 流式中：只有当前会话正在生成时才显示 -->
+        <div v-if="liveVisible" class="msg assistant">
           <div class="msg-head">
             <span class="who">助手</span>
             <span class="meta">生成中…</span>
@@ -517,11 +303,11 @@ onMounted(async () => {
           </div>
           <p class="suggest-text">{{ suggestion.optimized }}</p>
           <div class="suggest-actions">
-            <button class="btn btn-sm btn-primary" @click="adoptSuggestion">采用</button>
-            <button class="btn btn-sm btn-quiet" :disabled="optimizing" @click="refineSuggestion">
+            <button class="btn btn-sm btn-primary" @click="chat.adoptSuggestion()">采用</button>
+            <button class="btn btn-sm btn-quiet" :disabled="optimizing" @click="chat.refineSuggestion()">
               再改
             </button>
-            <button class="btn btn-sm btn-quiet" @click="dismissSuggestion">忽略</button>
+            <button class="btn btn-sm btn-quiet" @click="chat.dismissSuggestion()">忽略</button>
           </div>
         </div>
 
@@ -530,30 +316,37 @@ onMounted(async () => {
             v-model="draft"
             rows="2"
             placeholder="输入问题，Enter 发送，Shift+Enter 换行"
-            @keydown.enter.exact.prevent="send"
+            @keydown.enter.exact.prevent="chat.send()"
           />
           <div class="input-actions">
             <button
               v-if="preOptimizeDraft"
               class="btn btn-sm btn-quiet"
               title="把输入框还原成优化前的内容"
-              @click="undoAdopt"
+              @click="chat.undoAdopt()"
             >
               撤销优化
             </button>
             <button
               class="btn btn-sm btn-quiet"
               :disabled="!draft.trim() || optimizing"
-              @click="optimize"
+              @click="chat.optimize()"
             >
               {{ optimizing ? '优化中…' : '优化提问' }}
             </button>
-            <button v-if="streaming" class="btn btn-sm" @click="stop">停止</button>
+            <button
+              v-if="streaming"
+              class="btn btn-sm"
+              title="停止这次生成"
+              @click="chat.stop()"
+            >
+              停止
+            </button>
             <button
               v-else
               class="btn btn-sm btn-primary"
               :disabled="!draft.trim()"
-              @click="send"
+              @click="chat.send()"
             >
               发送
             </button>
