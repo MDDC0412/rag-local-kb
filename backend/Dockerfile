@@ -8,6 +8,9 @@ ENV TZ=Asia/Shanghai \
 
 WORKDIR /app
 
+# 允许构建期覆盖 PyPI 镜像源，例如内网源或国内加速源
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 # 编译依赖：chromadb / tiktoken 有些包需要 gcc；装完就删掉，镜像别背这个包袱
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc g++ \
@@ -15,7 +18,7 @@ RUN apt-get update \
 
 # 先只拷依赖清单：改代码不会让这一层失效，重建快很多
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt \
     && apt-get purge -y gcc g++ \
     && apt-get autoremove -y
 

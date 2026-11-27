@@ -2,15 +2,31 @@
 #
 # 用法：
 #   docker compose up --build
-#   → http://127.0.0.1:8080
+#   → http://<服务器IP>:8080
 #
 # 数据落在 ./data（宿主机），容器删了数据还在。
+#
+# 部署在服务器上时，请在仓库根目录建 .env 指定对外地址与镜像源：
+#   APP_PUBLIC_ORIGIN=http://your-server-ip:8080
+#   NPM_REGISTRY=https://registry.npmmirror.com        # registry 不可达时改镜像
+#   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+#   HTTP_PROXY=
+#   HTTPS_PROXY=
+#   NO_PROXY=
+#
+# 注意：APP_* 开头的变量只写进容器的环境变量；HTTP(S)_PROXY / NPM_REGISTRY /
+# PIP_INDEX_URL 只在构建期生效（compose 的 build.args），不会带进运行时。
 
 services:
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     container_name: rag-backend
     restart: unless-stopped
     # 必须单进程：Chroma 嵌入式库多进程会丢写入（见 HANDOVER §7.1）
@@ -23,7 +39,7 @@ services:
       APP_PORT: "8000"
       # 容器里没有系统代理，显式直连，免得上游代理把请求吞掉
       APP_HTTP_PROXY: direct
-      APP_CORS_ORIGINS: http://127.0.0.1:8080,http://localhost:8080
+      APP_CORS_ORIGINS: ${APP_PUBLIC_ORIGIN:-http://127.0.0.1:8080},http://localhost:8080
     volumes:
       - ./data:/data
     healthcheck:
@@ -38,6 +54,12 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        PNPM_VERSION: ${PNPM_VERSION:-11.18.0}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
     container_name: rag-frontend
     restart: unless-stopped
     ports:
